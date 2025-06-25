@@ -1,0 +1,33 @@
+{
+    "normal": {
+        "html": "<!DOCTYPE html><html><head><title>测试视频 - bilibili</title></head><body><div id='app'><script>window.__INITIAL_STATE__={\"videoData\":{\"bvid\":\"BV1xx411c7mD\",\"title\":\"测试视频标题\",\"duration\":180,\"cid\":\"12345678\",\"owner\":{\"name\":\"测试UP主\"},\"stat\":{\"view\":1000}}}</script></div></body></html>",
+        "expected": {
+            "title": "测试视频标题",
+            "duration": 180,
+            "author": "测试UP主",
+            "play_count": 1000,
+            "cid": "12345678"
+        }
+    },
+    "missing_cid": {
+        "html": "<!DOCTYPE html><html><head><title>测试视频 - bilibili</title></head><body><div id='app'><script>window.__INITIAL_STATE__={\"videoData\":{\"bvid\":\"BV1xx411c7mD\",\"title\":\"测试视频标题\"}}</script></div></body></html>",
+        "expected": {
+            "title": "测试视频标题",
+            "cid": null
+        }
+    },
+    "invalid_cid": {
+        "html": "<!DOCTYPE html><html><head><title>测试视频 - bilibili</title></head><body><div id='app'><script>window.__INITIAL_STATE__={\"videoData\":{\"bvid\":\"BV1xx411c7mD\",\"cid\":\"invalid\"}}</script></div></body></html>",
+        "expected": {
+            "cid": null
+        }
+    },
+    "missing_data": {
+        "html": "<!DOCTYPE html><html><head><title>测试视频 - bilibili</title></head><body><div id='app'><script>window.__INITIAL_STATE__={\"videoData\":{}}</script></div></body></html>",
+        "expected": null
+    },
+    "anti_crawl": {
+        "html": "<!DOCTYPE html><html><head><title>请求太快了 - bilibili</title></head><body><div class='error-body'>请求太快了，请稍后再试</div></body></html>",
+        "expected": null
+    }
+}

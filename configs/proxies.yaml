@@ -1,0 +1,9 @@
+proxies:
+  - address: "127.0.0.1:7890"
+    type: "http"
+    timeout: 30
+    enabled: true
+  - address: "127.0.0.1:7891"
+    type: "socks5"
+    timeout: 30
+    enabled: false 
