@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Slot, Signal
 
-from plugins.youtube import YouTubeDownloader
+from src.plugins.youtube import YouTubeDownloader
 
 logger = logging.getLogger(__name__)
 

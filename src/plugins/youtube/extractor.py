@@ -3,6 +3,7 @@
 该模块负责从YouTube视频URL中提取视频信息。
 """
 
+import re
 import logging
 from typing import Dict, Any, List, Optional
 from pathlib import Path
@@ -10,10 +11,14 @@ import yt_dlp
 
 logger = logging.getLogger(__name__)
 
+# URL模式
+SHORTS_PATTERN = r"youtube\.com/shorts/([a-zA-Z0-9_-]+)"
+
 class YouTubeExtractor:
     """YouTube视频信息提取器。
     
     使用yt-dlp库从YouTube视频中提取信息。
+    支持普通视频和Shorts。
     
     Attributes:
         proxy: Optional[str], 代理服务器地址
@@ -40,6 +45,18 @@ class YouTubeExtractor:
         if proxy:
             self.ydl_opts['proxy'] = proxy
             
+    @staticmethod
+    def is_shorts(url: str) -> bool:
+        """检查是否是YouTube Shorts链接。
+        
+        Args:
+            url: YouTube视频URL
+            
+        Returns:
+            bool: 是否是Shorts
+        """
+        return bool(re.search(SHORTS_PATTERN, url))
+            
     def extract_info(self, url: str) -> Dict[str, Any]:
         """提取视频信息。
         
@@ -54,6 +71,7 @@ class YouTubeExtractor:
                 - view_count: int, 播放量
                 - like_count: int, 点赞数
                 - duration: int, 视频时长（秒）
+                - is_short: bool, 是否是Shorts视频
                 
         Raises:
             ValueError: URL无效
@@ -71,7 +89,8 @@ class YouTubeExtractor:
                     with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
                         info = ydl.extract_info(url, download=False)
                 
-                return {
+                # 基本信息
+                result = {
                     'title': info.get('title', ''),
                     'author': info.get('uploader', ''),
                     'quality': [f'{fmt["height"]}p' for fmt in info.get('formats', [])
@@ -81,9 +100,18 @@ class YouTubeExtractor:
                     'duration': info.get('duration', 0)
                 }
                 
+                # 检查是否是Shorts
+                if self.is_shorts(url):
+                    result['is_short'] = True
+                    result['duration'] = min(result['duration'], 60)  # Shorts不超过60秒
+                else:
+                    result['is_short'] = False
+                    
+                return result
+                
         except yt_dlp.utils.DownloadError as e:
             logger.error(f"提取信息失败: {e}")
             raise ValueError(f"无法提取视频信息: {e}")
         except Exception as e:
             logger.error(f"未知错误: {e}")
-            raise 
+            raise ValueError(f"无效的YouTube URL: {e}") 

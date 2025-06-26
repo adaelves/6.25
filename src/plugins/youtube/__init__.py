@@ -1,12 +1,13 @@
-"""YouTube下载器插件。
+"""YouTube视频下载插件。
 
-提供YouTube视频信息提取和下载功能。
+该插件提供YouTube视频下载功能。
 """
 
+from .extractor import YouTubeExtractor
 from .downloader import YouTubeDownloader
 
 __version__ = "1.0.0"
-__all__ = ["YouTubeDownloader"]
+__all__ = ['YouTubeExtractor', 'YouTubeDownloader']
 
 # 插件信息
 PLUGIN_NAME = "youtube"

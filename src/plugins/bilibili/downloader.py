@@ -1,20 +1,28 @@
 """B站视频下载器模块。
 
-该模块实现了B站视频的下载功能，包括视频分段合并和弹幕下载。
+该模块负责从B站下载视频和弹幕。
 """
 
 import os
+import time
 import json
 import logging
 import tempfile
-import subprocess
 import threading
+import subprocess
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple, Callable
+from typing import Optional, Dict, Any, Callable, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
 import requests
-from core.downloader import BaseDownloader
+
+from src.core.downloader import BaseDownloader
+from src.core.exceptions import (
+    BiliBiliError,
+    NetworkError,
+    DownloadCanceled
+)
+from src.core.config import DownloaderConfig
+from src.core.speed_limiter import SpeedLimiter
 from .extractor import BilibiliExtractor
 from .danmaku import download_danmaku
 
@@ -25,12 +33,13 @@ class BilibiliDownloader(BaseDownloader):
     
     继承自BaseDownloader，实现B站视频的下载功能。
     支持多分辨率选择、自动合并分段和弹幕下载。
+    支持速度限制和并发控制。
     
     Attributes:
+        config: DownloaderConfig, 下载器配置
         extractor: BilibiliExtractor, 视频信息提取器
         ffmpeg_path: str, FFmpeg可执行文件路径
-        max_workers: int, 下载线程数
-        chunk_size: int, 分块下载大小
+        speed_limiter: Optional[SpeedLimiter], 速度限制器
     """
     
     # 清晰度代码映射
@@ -46,25 +55,60 @@ class BilibiliDownloader(BaseDownloader):
     
     def __init__(
         self,
+        config: DownloaderConfig,
         sessdata: Optional[str] = None,
-        ffmpeg_path: str = "ffmpeg",
-        max_workers: int = 4,
-        chunk_size: int = 1024 * 1024  # 1MB
+        ffmpeg_path: str = "ffmpeg"
     ):
         """初始化下载器。
         
         Args:
+            config: 下载器配置
             sessdata: B站登录凭证，用于下载高清晰度视频
             ffmpeg_path: FFmpeg可执行文件路径
-            max_workers: 下载线程数
-            chunk_size: 分块下载大小（字节）
         """
-        super().__init__()
+        super().__init__(save_dir=str(config.save_dir))
+        self.config = config
         self.extractor = BilibiliExtractor(sessdata=sessdata)
         self.ffmpeg_path = ffmpeg_path
-        self.max_workers = max_workers
-        self.chunk_size = chunk_size
-        self._temp_files = set()  # 记录临时文件
+        self.speed_limiter = (
+            SpeedLimiter(config.speed_limit) if config.speed_limit > 0 else None
+        )
+        self._temp_files = set()
+        
+    def get_video_info(self, url: str) -> Dict[str, Any]:
+        """获取视频信息。
+
+        Args:
+            url: 视频URL
+
+        Returns:
+            Dict[str, Any]: 包含视频信息的字典
+                
+        Raises:
+            ValueError: URL格式无效
+            ConnectionError: 网络连接错误
+            TimeoutError: 请求超时
+        """
+        try:
+            info = self.extractor.extract_info(url)
+            if not info:
+                raise ValueError(f"无法获取视频信息: {url}")
+                
+            return {
+                "title": info.get("title", ""),
+                "author": info.get("owner", {}).get("name", ""),
+                "quality": self.QUALITY_MAP.get(
+                    info.get("quality", 0), 
+                    "未知"
+                ),
+                "duration": info.get("duration", 0),
+                "description": info.get("desc", "")
+            }
+            
+        except BiliBiliError as e:
+            raise ConnectionError(str(e))
+        except Exception as e:
+            raise ValueError(str(e))
         
     def download(
         self,
@@ -268,7 +312,9 @@ class BilibiliDownloader(BaseDownloader):
         segment_files = []
         total_segments = len(segments)
         
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+        with ThreadPoolExecutor(
+            max_workers=self.config.max_concurrent_downloads
+        ) as executor:
             futures = []
             
             for i, segment in enumerate(segments):
@@ -290,9 +336,11 @@ class BilibiliDownloader(BaseDownloader):
                         
                     if future.result():
                         segment_files.append(path)
-                        if progress_callback:
-                            progress = (index + 1) / total_segments
-                            progress_callback(min(progress, 1.0))
+                        progress = (index + 1) / total_segments
+                        self.update_progress(
+                            progress,
+                            f"下载进度: {index + 1}/{total_segments} 个分段"
+                        )
                     else:
                         return []
                 except DownloadCanceled:
@@ -306,18 +354,18 @@ class BilibiliDownloader(BaseDownloader):
     def _download_segment(
         self,
         url: str,
-        path: Path,
+        save_path: Path,
         cancel_event: Optional[threading.Event] = None
     ) -> bool:
-        """下载单个视频分段。
+        """下载视频分段。
         
         Args:
             url: 分段URL
-            path: 保存路径
+            save_path: 保存路径
             cancel_event: 取消事件
             
         Returns:
-            bool: 是否成功
+            bool: 是否下载成功
             
         Raises:
             DownloadCanceled: 用户取消下载
@@ -327,27 +375,50 @@ class BilibiliDownloader(BaseDownloader):
                 url,
                 headers=self.extractor.headers,
                 proxies=self.extractor.proxies,
-                stream=True
+                stream=True,
+                timeout=self.config.timeout
             )
             response.raise_for_status()
             
-            with open(path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=self.chunk_size):
+            total_size = int(response.headers.get("content-length", 0))
+            downloaded_size = 0
+            
+            with open(save_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=self.config.chunk_size):
                     if cancel_event and cancel_event.is_set():
                         raise DownloadCanceled("用户取消下载")
                         
-                    if chunk:
-                        f.write(chunk)
+                    if self.speed_limiter:
+                        self.speed_limiter.wait_sync(len(chunk))
+                        
+                    f.write(chunk)
+                    downloaded_size += len(chunk)
+                    
+                    if total_size:
+                        progress = downloaded_size / total_size
+                        speed = (
+                            self.speed_limiter.current_speed if self.speed_limiter
+                            else 0
+                        )
+                        self.update_progress(
+                            progress,
+                            f"下载进度: {downloaded_size}/{total_size} bytes"
+                            f" ({speed/1024:.1f} KB/s)"
+                        )
                         
             return True
             
-        except DownloadCanceled:
-            raise
         except Exception as e:
-            logger.error(f"分段下载失败 {url}: {e}")
+            logger.error(f"下载分段失败: {e}")
+            if save_path.exists():
+                save_path.unlink()
             return False
             
-    def _merge_segments(self, segment_files: List[Path], output_path: Path) -> bool:
+    def _merge_segments(
+        self,
+        segment_files: List[Path],
+        output_path: Path
+    ) -> bool:
         """合并视频分段。
         
         Args:
@@ -355,39 +426,44 @@ class BilibiliDownloader(BaseDownloader):
             output_path: 输出文件路径
             
         Returns:
-            bool: 是否成功
+            bool: 是否合并成功
         """
         try:
-            # 生成合并列表文件
-            concat_file = output_path.parent / "concat.txt"
+            # 准备FFmpeg命令
+            concat_file = output_path.with_suffix(".txt")
+            self._temp_files.add(concat_file)
+            
+            # 写入concat文件
             with open(concat_file, "w", encoding="utf-8") as f:
                 for file in segment_files:
                     f.write(f"file '{file.absolute()}'\n")
                     
-            # 调用FFmpeg合并
+            # 执行合并
             cmd = [
                 self.ffmpeg_path,
                 "-f", "concat",
                 "-safe", "0",
                 "-i", str(concat_file),
                 "-c", "copy",
-                str(output_path),
-                "-y"
+                "-y",
+                str(output_path)
             ]
             
-            process = subprocess.run(
+            result = subprocess.run(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
+                text=True
             )
             
-            # 清理临时文件
-            concat_file.unlink()
-            
-            return process.returncode == 0
+            if result.returncode != 0:
+                logger.error(f"合并失败: {result.stderr}")
+                return False
+                
+            return True
             
         except Exception as e:
-            logger.error(f"视频合并失败: {e}")
+            logger.error(f"合并失败: {e}")
             return False
             
     def _make_request(self, url: str, **kwargs) -> Dict[str, Any]:
@@ -425,10 +501,11 @@ class BilibiliDownloader(BaseDownloader):
             
     def _clean_temp_files(self):
         """清理临时文件。"""
-        for path in self._temp_files:
+        for path in self._temp_files.copy():
             try:
                 if path.exists():
                     path.unlink()
+                self._temp_files.remove(path)
             except Exception as e:
                 logger.error(f"清理临时文件失败 {path}: {e}")
                 

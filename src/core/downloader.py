@@ -4,53 +4,82 @@
 """
 下载器基类模块。
 
-该模块定义了所有下载器必须实现的基本接口。
+定义下载器的基本接口和通用功能。
 """
 
+import os
 import logging
 from abc import ABC, abstractmethod
+from typing import Optional, Dict, Any, Callable
 from pathlib import Path
-from typing import Dict, Any, Optional
+
+from .exceptions import DownloadCanceled
 
 # 配置日志
 logger = logging.getLogger(__name__)
 
 class BaseDownloader(ABC):
-    """下载器抽象基类。
+    """下载器基类。
     
-    所有具体的下载器实现都应该继承这个基类并实现其抽象方法。
+    定义下载器的基本接口，提供通用的下载功能。
     
     Attributes:
-        proxy: Optional[str], 代理服务器地址，格式为"host:port"
-        timeout: float, 网络请求超时时间（秒）
+        save_dir: 保存目录
+        progress_callback: 进度回调函数
+        is_canceled: 是否已取消下载
     """
     
-    def __init__(self, proxy: Optional[str] = None, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        save_dir: str,
+        progress_callback: Optional[Callable[[float, str], None]] = None
+    ):
         """初始化下载器。
-
+        
         Args:
-            proxy: 可选的代理服务器地址，格式为"host:port"
-            timeout: 网络请求超时时间，默认30秒
+            save_dir: 保存目录
+            progress_callback: 进度回调函数，接收进度(0-1)和状态信息
         """
-        self.proxy = proxy
-        self.timeout = timeout
-        logger.info(f"初始化下载器，代理：{proxy}，超时：{timeout}秒")
-
-    @abstractmethod
-    def download(self, url: str, save_path: Path) -> bool:
-        """下载指定URL的视频到指定路径。
-
-        Args:
-            url: 要下载的视频URL
-            save_path: 保存文件的路径
-
-        Returns:
-            bool: 下载是否成功
-
+        self.save_dir = Path(save_dir)
+        self.progress_callback = progress_callback
+        self.is_canceled = False
+        
+        # 创建保存目录
+        os.makedirs(self.save_dir, exist_ok=True)
+        
+    def cancel(self):
+        """取消下载。"""
+        self.is_canceled = True
+        
+    def check_canceled(self):
+        """检查是否已取消。
+        
         Raises:
-            ValueError: URL格式无效
-            ConnectionError: 网络连接错误
-            TimeoutError: 下载超时
+            DownloadCanceled: 如果下载已被取消
+        """
+        if self.is_canceled:
+            raise DownloadCanceled("下载已取消")
+            
+    def update_progress(self, progress: float, status: str = ""):
+        """更新下载进度。
+        
+        Args:
+            progress: 进度值(0-1)
+            status: 状态信息
+        """
+        if self.progress_callback:
+            self.progress_callback(progress, status)
+            
+    @abstractmethod
+    def download(self, url: str, **kwargs) -> bool:
+        """执行下载。
+        
+        Args:
+            url: 下载URL
+            **kwargs: 其他参数
+            
+        Returns:
+            bool: 是否下载成功
         """
         pass
 

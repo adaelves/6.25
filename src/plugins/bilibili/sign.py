@@ -44,6 +44,9 @@ def generate_sign(params: Dict[str, Any], sessdata: Optional[str] = None) -> Dic
     Returns:
         Dict[str, Any]: 包含签名的完整参数
         
+    Raises:
+        ValueError: 参数类型无效或包含无效值
+        
     Example:
         >>> params = {'aid': '12345', 'cid': '67890'}
         >>> signed_params = generate_sign(params, sessdata='your_sessdata')
@@ -56,6 +59,17 @@ def generate_sign(params: Dict[str, Any], sessdata: Optional[str] = None) -> Dic
         }
     """
     try:
+        # 验证参数类型
+        if not isinstance(params, dict):
+            raise ValueError(f"参数必须是字典类型，而不是 {type(params)}")
+            
+        # 验证参数值
+        for key, value in params.items():
+            if not isinstance(key, str):
+                raise ValueError(f"参数键必须是字符串类型: {key}")
+            if not isinstance(value, (str, int, float, bool)):
+                raise ValueError(f"参数值必须是基本类型: {key}={value}")
+                
         # 复制原始参数
         signed_params = params.copy()
         

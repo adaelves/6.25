@@ -9,6 +9,8 @@ import threading
 import pytest
 from pathlib import Path
 from unittest.mock import Mock, patch
+import requests
+from warnings import warn as ResourceWarning
 
 from src.plugins.bilibili.downloader import BilibiliDownloader
 from src.core.exceptions import DownloadCanceled
@@ -305,4 +307,121 @@ class TestDownloadCancel:
             )
             
         result = benchmark(run_benchmark)
-        assert result is False, "基准测试应该返回False" 
+        assert result is False, "基准测试应该返回False"
+        
+    def test_no_resource_leak(self, mocker):
+        """测试资源泄漏。"""
+        # Mock基本功能
+        mocker.patch.object(
+            self.downloader.extractor,
+            "extract_info",
+            return_value=self.mock_video_info
+        )
+        mocker.patch.object(
+            self.downloader,
+            "_get_video_streams",
+            return_value=self.mock_streams
+        )
+        
+        # Mock网络请求
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = Mock()
+        mock_response.iter_content.return_value = [b"chunk"] * 5
+        mock_response.close = Mock()  # 添加close方法的mock
+        
+        mocker.patch("requests.get", return_value=mock_response)
+        
+        # 创建取消事件并立即设置
+        cancel_event = threading.Event()
+        cancel_event.set()
+        
+        # 使用pytest.warns检查ResourceWarning
+        with pytest.warns(ResourceWarning, match="unclosed.*"):
+            self.downloader.download(
+                self.test_url,
+                self.test_save_path,
+                cancel_event=cancel_event
+            )
+            
+        # 验证response.close被调用
+        assert mock_response.close.called, "应该调用response.close()"
+        
+    def test_cleanup_on_error(self, mocker):
+        """测试错误情况下的资源清理。"""
+        # Mock网络请求在下载过程中抛出异常
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = Mock()
+        mock_response.iter_content.side_effect = requests.RequestException("模拟网络错误")
+        mock_response.close = Mock()
+        
+        mocker.patch("requests.get", return_value=mock_response)
+        mocker.patch.object(
+            self.downloader.extractor,
+            "extract_info",
+            return_value=self.mock_video_info
+        )
+        mocker.patch.object(
+            self.downloader,
+            "_get_video_streams",
+            return_value=self.mock_streams
+        )
+        
+        # 执行下载
+        result = self.downloader.download(self.test_url, self.test_save_path)
+        
+        assert result is False, "下载应该失败"
+        assert mock_response.close.called, "即使发生错误也应该调用response.close()"
+        assert len(self.downloader._temp_files) == 0, "应该清理所有临时文件"
+        
+    def test_concurrent_cancellation(self, mocker):
+        """测试并发下载时的取消。"""
+        # Mock基本功能
+        mocker.patch.object(
+            self.downloader.extractor,
+            "extract_info",
+            return_value=self.mock_video_info
+        )
+        mocker.patch.object(
+            self.downloader,
+            "_get_video_streams",
+            return_value=self.mock_streams
+        )
+        
+        # 创建多个响应对象
+        responses = []
+        for _ in range(3):  # 模拟3个并发下载
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.raise_for_status = Mock()
+            mock_response.iter_content.return_value = [b"chunk"] * 10
+            mock_response.close = Mock()
+            responses.append(mock_response)
+            
+        mock_get = mocker.patch("requests.get")
+        mock_get.side_effect = responses
+        
+        # 创建取消事件
+        cancel_event = threading.Event()
+        
+        def delayed_cancel():
+            time.sleep(0.1)  # 等待所有下载开始
+            cancel_event.set()
+            
+        # 启动延迟取消线程
+        cancel_thread = threading.Thread(target=delayed_cancel)
+        cancel_thread.start()
+        
+        # 执行下载
+        result = self.downloader.download(
+            self.test_url,
+            self.test_save_path,
+            cancel_event=cancel_event
+        )
+        
+        cancel_thread.join()
+        
+        assert result is False, "取消下载应该返回False"
+        assert all(r.close.called for r in responses), "应该关闭所有响应"
+        assert len(self.downloader._temp_files) == 0, "应该清理所有临时文件" 

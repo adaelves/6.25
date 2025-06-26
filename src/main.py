@@ -39,6 +39,10 @@ def main() -> None:
     logger = logging.getLogger(__name__)
     logger.info(f"应用程序启动，工作目录：{PROJECT_ROOT}")
     
+    # 打印诊断信息
+    logger.info(f"Python 路径：{sys.path}")
+    logger.info(f"__file__: {__file__}")
+    
     # 创建应用
     app = QApplication(sys.argv)
     

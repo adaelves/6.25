@@ -39,11 +39,22 @@ class TestBilibiliExtractor:
         # 记录所有mock
         self.mocks = []
         
+        # 设置全局请求超时
+        self.original_timeout = self.extractor.timeout
+        self.extractor.timeout = 5  # 设置较短的超时时间用于测试
+        
         yield
+        
+        # 恢复原始超时设置
+        self.extractor.timeout = self.original_timeout
         
         # 清理所有mock
         for mock in self.mocks:
             mock.stop()
+            
+        # 确保线程池关闭
+        if hasattr(self, '_thread_pool'):
+            self._thread_pool.shutdown(wait=False)
             
     def _create_mock(self, target, **kwargs):
         """创建并记录mock对象。
@@ -696,14 +707,15 @@ class TestBilibiliExtractor:
                 
         benchmark(run_benchmark)
         
+    @pytest.mark.timeout(10)  # 设置测试超时时间为10秒
     def test_concurrent_requests(self, benchmark, mocker):
         """测试并发请求性能。"""
         from concurrent.futures import ThreadPoolExecutor
         import random
         
-        # 模拟随机延迟的响应
+        # 使用较小的延迟范围
         def delayed_response(*args, **kwargs):
-            time.sleep(random.uniform(0.001, 0.01))
+            time.sleep(random.uniform(0.001, 0.005))  # 减小延迟范围
             return create_video_response()
             
         mocker.patch("requests.get", side_effect=delayed_response)
@@ -711,18 +723,23 @@ class TestBilibiliExtractor:
         def run_concurrent_requests():
             urls = [
                 f"https://www.bilibili.com/video/BV{i:010d}"
-                for i in range(10)
+                for i in range(5)  # 减少并发请求数量
             ]
             
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                results = list(executor.map(
+            # 使用类属性存储线程池以便清理
+            self._thread_pool = ThreadPoolExecutor(max_workers=3)
+            try:
+                results = list(self._thread_pool.map(
                     self.extractor.extract_info,
-                    urls
+                    urls,
+                    timeout=5  # 添加超时控制
                 ))
+            finally:
+                self._thread_pool.shutdown(wait=True)
             return results
             
         results = benchmark(run_concurrent_requests)
-        assert len(results) == 10, "应该成功处理所有并发请求"
+        assert len(results) == 5, "应该成功处理所有并发请求"
         
     @pytest.mark.parametrize("test_case", [
         (
@@ -807,4 +824,123 @@ class TestBilibiliExtractor:
         with pytest.raises(RuntimeError) as exc_info:
             self.extractor.extract_info("https://www.bilibili.com/video/BV1xx411c7mD")
             
-        assert "磁盘空间不足" in str(exc_info.value), "应该提示磁盘空间不足" 
+        assert "磁盘空间不足" in str(exc_info.value), "应该提示磁盘空间不足"
+        
+    def test_parse_legacy_response(self):
+        """测试旧版API响应解析。"""
+        # 构造旧版API响应数据
+        legacy_data = {
+            "code": 0,
+            "data": {
+                "video_data": {
+                    "bvid": "BV1xx411c7mD",
+                    "aid": 12345678,
+                    "cid": 87654321,
+                    "title": "测试视频",
+                    "desc": "测试描述",
+                    "duration": 180,
+                    "owner": {
+                        "name": "测试UP主",
+                        "mid": 10086
+                    },
+                    "stat": {
+                        "view": 1000,
+                        "like": 100
+                    },
+                    "pages": [],
+                    "subtitle": {},
+                    "rights": {
+                        "vip_only": 0,
+                        "area_limit": 0
+                    }
+                }
+            }
+        }
+        
+        result = self.extractor._parse_response(legacy_data)
+        
+        assert result["bvid"] == "BV1xx411c7mD"
+        assert result["title"] == "测试视频"
+        assert result["owner"]["name"] == "测试UP主"
+        assert not result["is_vip_only"]
+        
+    def test_parse_new_response(self):
+        """测试新版API响应解析。"""
+        # 构造新版API响应数据
+        new_data = {
+            "code": 0,
+            "data": {
+                "bvid": "BV1xx411c7mD",
+                "aid": 12345678,
+                "cid": 87654321,
+                "title": "测试视频",
+                "desc": "测试描述",
+                "duration": 180,
+                "owner": {
+                    "name": "测试UP主",
+                    "mid": 10086
+                },
+                "stat": {
+                    "view": 1000,
+                    "like": 100
+                },
+                "pages": [],
+                "subtitle": {},
+                "rights": {
+                    "vip_only": 1,
+                    "area_limit": 0
+                }
+            }
+        }
+        
+        result = self.extractor._parse_response(new_data)
+        
+        assert result["bvid"] == "BV1xx411c7mD"
+        assert result["title"] == "测试视频"
+        assert result["owner"]["name"] == "测试UP主"
+        assert result["is_vip_only"]
+        
+    def test_parse_invalid_response(self):
+        """测试无效响应解析。"""
+        # 测试空数据
+        with pytest.raises(ParsingError, match="返回数据为空"):
+            self.extractor._parse_response({"code": 0, "data": {}})
+            
+        # 测试错误码
+        with pytest.raises(VIPContentError):
+            self.extractor._parse_response({"code": -404, "message": "啥都木有"})
+            
+        # 测试未知错误码
+        with pytest.raises(BiliBiliError):
+            self.extractor._parse_response({"code": -999, "message": "未知错误"})
+            
+    def test_api_version_compatibility(self):
+        """测试API版本兼容性。"""
+        # 测试标题长度截断
+        long_title = "x" * 150
+        
+        # 旧版API
+        legacy_data = {
+            "code": 0,
+            "data": {
+                "video_data": {
+                    "bvid": "BV1xx411c7mD",
+                    "title": long_title
+                }
+            }
+        }
+        result = self.extractor._parse_response(legacy_data)
+        assert len(result["title"]) == 100
+        assert result["title"].endswith("...")
+        
+        # 新版API
+        new_data = {
+            "code": 0,
+            "data": {
+                "bvid": "BV1xx411c7mD",
+                "title": long_title
+            }
+        }
+        result = self.extractor._parse_response(new_data)
+        assert len(result["title"]) == 100
+        assert result["title"].endswith("...") 

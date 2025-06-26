@@ -1,16 +1,19 @@
 """YouTube视频下载器模块。
 
-该模块实现了YouTube视频的下载功能。
+该模块负责从YouTube下载视频。
+支持断点续传功能。
 """
 
-import sys
+import os
 import logging
+from typing import Optional, Dict, Any, List, Callable
 from pathlib import Path
-from typing import Dict, Any, Optional
-
 import yt_dlp
-from core.downloader import BaseDownloader
-from services.proxy import get_current_proxy
+
+from src.core.downloader import BaseDownloader
+from src.core.exceptions import DownloadError
+from src.core.config import DownloaderConfig
+from src.core.speed_limiter import SpeedLimiter
 from .extractor import YouTubeExtractor
 
 logger = logging.getLogger(__name__)
@@ -18,101 +21,67 @@ logger = logging.getLogger(__name__)
 class YouTubeDownloader(BaseDownloader):
     """YouTube视频下载器。
     
-    继承自BaseDownloader，使用yt-dlp实现YouTube视频下载。
+    使用yt-dlp库从YouTube下载视频。
+    支持视频质量选择和格式控制。
+    支持断点续传功能。
+    支持速度限制和并发控制。
+    
+    Attributes:
+        config: DownloaderConfig, 下载器配置
+        progress_callback: Optional[Callable], 进度回调函数
+        speed_limiter: Optional[SpeedLimiter], 速度限制器
+        max_height: int, 最大视频高度（像素）
+        prefer_quality: str, 优先选择的视频质量
+        merge_output_format: str, 合并后的输出格式
     """
     
-    def __init__(self, proxy: Optional[str] = None, timeout: float = 30.0):
+    # 支持的视频质量
+    QUALITIES = {
+        '4K': 2160,
+        '2K': 1440,
+        '1080p': 1080,
+        '720p': 720,
+        '480p': 480,
+        '360p': 360
+    }
+    
+    def __init__(
+        self,
+        config: DownloaderConfig,
+        max_height: int = 1080,
+        prefer_quality: str = '1080p',
+        merge_output_format: str = 'mp4'
+    ):
         """初始化下载器。
         
         Args:
-            proxy: 可选的代理服务器地址
-            timeout: 网络请求超时时间（秒）
+            config: 下载器配置
+            max_height: 最大视频高度
+            prefer_quality: 优先选择的视频质量
+            merge_output_format: 合并后的输出格式
         """
-        # 如果没有指定代理，使用代理管理器
-        if proxy is None:
-            proxy = get_current_proxy()
-            
-        super().__init__(proxy=proxy, timeout=timeout)
-        self.extractor = YouTubeExtractor(proxy=proxy, timeout=timeout)
+        super().__init__(save_dir=str(config.save_dir))
+        self.config = config
+        self.max_height = max_height
+        self.prefer_quality = prefer_quality
+        self.merge_output_format = merge_output_format
+        self.speed_limiter = (
+            SpeedLimiter(config.speed_limit) if config.speed_limit > 0 else None
+        )
         
-        # 用于进度显示
-        self._last_progress = 0
-        self._progress_output = sys.stderr
+    def _get_format_selector(self) -> str:
+        """获取格式选择器。
         
-    def download(self, url: str, save_path: Path) -> bool:
-        """下载YouTube视频。
-        
-        Args:
-            url: YouTube视频URL
-            save_path: 保存路径
-            
         Returns:
-            bool: 下载是否成功
-            
-        Raises:
-            ValueError: URL无效
-            ConnectionError: 网络连接错误
-            TimeoutError: 下载超时
+            str: 格式选择器字符串
         """
-        try:
-            if not self._validate_url(url):
-                raise ValueError(f"无效的YouTube URL: {url}")
-                
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            ydl_opts = {
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                'outtmpl': str(save_path),
-                'quiet': True,
-                'no_warnings': True,
-                'progress_hooks': [self._progress_hook],
-            }
-            
-            # 使用代理
-            if self.proxy:
-                logger.info(f"使用代理: {self.proxy}")
-                ydl_opts['proxy'] = self.proxy
-                
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                try:
-                    ydl.download([url])
-                except yt_dlp.utils.DownloadError as e:
-                    if "HTTP Error 403: Forbidden" in str(e) and self.proxy:
-                        logger.warning("代理访问被拒绝，尝试切换代理...")
-                        new_proxy = get_current_proxy()
-                        if new_proxy and new_proxy != self.proxy:
-                            self.proxy = new_proxy
-                            ydl_opts['proxy'] = self.proxy
-                            with yt_dlp.YoutubeDL(ydl_opts) as ydl2:
-                                ydl2.download([url])
-                        else:
-                            raise
-                    else:
-                        raise
-                
-            # 完成下载，清理进度显示
-            print(file=self._progress_output)
-            return True
-            
-        except Exception as e:
-            logger.error(f"下载失败: {e}")
-            return False
-            
-    def get_video_info(self, url: str) -> Dict[str, Any]:
-        """获取视频信息。
+        height = self.QUALITIES.get(self.prefer_quality, 1080)
+        height = min(height, self.max_height)
         
-        Args:
-            url: YouTube视频URL
-            
-        Returns:
-            Dict[str, Any]: 视频信息字典
-            
-        Raises:
-            ValueError: URL无效
-            ConnectionError: 网络连接错误
-            TimeoutError: 请求超时
-        """
-        return self.extractor.extract_info(url)
+        return (
+            f"bestvideo[height<={height}]"
+            "+bestaudio/best[height<={height}]"
+        )
         
     def _progress_hook(self, d: Dict[str, Any]) -> None:
         """下载进度回调。
@@ -121,24 +90,136 @@ class YouTubeDownloader(BaseDownloader):
             d: 进度信息字典
         """
         if d['status'] == 'downloading':
-            total = d.get('total_bytes')
+            # 计算进度
+            total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
             downloaded = d.get('downloaded_bytes', 0)
             
-            if total:
-                progress = (downloaded / total) * 100
-                # 只有进度变化超过0.1%时才更新显示
-                if abs(progress - self._last_progress) >= 0.1:
-                    self._last_progress = progress
-                    speed = d.get('speed', 0)
-                    if speed:
-                        speed_str = f"{speed/1024/1024:.1f} MB/s"
-                    else:
-                        speed_str = "N/A"
+            if total > 0:
+                progress = downloaded / total
+                speed = d.get('speed', 0)
+                eta = d.get('eta', 0)
+                
+                # 应用速度限制
+                if self.speed_limiter and speed > self.config.speed_limit:
+                    self.speed_limiter.wait_sync(
+                        int(speed * self.config.chunk_size / 1024)
+                    )
+                    speed = self.speed_limiter.current_speed
                     
-                    progress_str = f"\r下载进度: {progress:.1f}% | 速度: {speed_str}"
-                    print(progress_str, end='', file=self._progress_output)
-                    self._progress_output.flush()
-                    
-        elif d['status'] == 'finished':
-            print("\r下载完成: 100%", end='', file=self._progress_output)
-            self._progress_output.flush() 
+                self.update_progress(
+                    progress,
+                    f"下载进度: {downloaded}/{total} bytes"
+                    f" ({speed/1024:.1f} KB/s, ETA: {eta}s)"
+                )
+                
+    def download(self, url: str, save_path: Optional[Path] = None) -> bool:
+        """下载视频。
+        
+        Args:
+            url: 视频URL
+            save_path: 可选的保存路径
+            
+        Returns:
+            bool: 是否下载成功
+            
+        Raises:
+            ValueError: URL无效
+            DownloadError: 下载失败
+        """
+        try:
+            # 确定保存路径
+            if save_path is None:
+                info = self.get_video_info(url)
+                filename = self.config.format_filename(info)
+                save_path = self.config.save_dir / filename
+                
+            # 确保输出目录存在
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # 检查临时文件
+            temp_path = save_path.with_suffix(save_path.suffix + '.part')
+            resume_size = temp_path.stat().st_size if temp_path.exists() else 0
+            
+            if resume_size > 0:
+                logger.info(f"发现未完成的下载: {temp_path}, 已下载: {resume_size} 字节")
+            
+            # yt-dlp配置
+            ydl_opts = {
+                'format': self._get_format_selector(),
+                'outtmpl': str(save_path),
+                'merge_output_format': self.merge_output_format,
+                'quiet': True,
+                'no_warnings': True,
+                'nocheckcertificate': True,  # 避免证书问题
+                'noplaylist': True,  # 不下载播放列表
+                'progress_hooks': [self._progress_hook],  # 进度回调
+                'continuedl': True,  # 启用断点续传
+                'noresizebuffer': True,  # 禁用缓冲区大小调整
+                'retries': self.config.max_retries,  # 重试次数
+                'fragment_retries': self.config.max_retries,  # 分段重试次数
+                'socket_timeout': self.config.timeout,  # 超时设置
+            }
+            
+            if resume_size > 0:
+                ydl_opts.update({
+                    'resume': True,  # 启用续传
+                    'start_byte': resume_size  # 设置起始字节
+                })
+            
+            if self.config.proxy:
+                ydl_opts['proxy'] = self.config.proxy
+                
+            # 下载视频
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"下载失败: {e}")
+            raise DownloadError(f"下载失败: {e}")
+            
+    def get_video_info(self, url: str) -> Dict[str, Any]:
+        """获取视频信息。
+        
+        Args:
+            url: 视频URL
+            
+        Returns:
+            Dict[str, Any]: 视频信息
+            
+        Raises:
+            ValueError: URL无效
+            DownloadError: 获取信息失败
+        """
+        try:
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': True
+            }
+            
+            if self.config.proxy:
+                ydl_opts['proxy'] = self.config.proxy
+                
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                
+            # 转换为统一格式
+            return {
+                'title': info.get('title', ''),
+                'author': info.get('uploader', ''),
+                'id': info.get('id', ''),
+                'duration': info.get('duration', 0),
+                'views': info.get('view_count', 0),
+                'likes': info.get('like_count', 0),
+                'description': info.get('description', ''),
+                'category': info.get('categories', [''])[0],
+                'tags': info.get('tags', []),
+                'quality': self.prefer_quality,
+                'ext': self.merge_output_format
+            }
+            
+        except Exception as e:
+            logger.error(f"获取视频信息失败: {e}")
+            raise DownloadError(f"获取视频信息失败: {e}") 

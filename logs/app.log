@@ -44,3 +44,40 @@
 2025-06-25 17:04:07,106 - plugins.youtube.downloader - INFO - 下载进度: 98.2%
 2025-06-25 17:04:07,299 - plugins.youtube.downloader - INFO - 下载进度: 100.0%
 2025-06-25 17:04:07,301 - plugins.youtube.downloader - INFO - 下载完成
+2025-06-25 21:28:47,829 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-25 21:31:43,205 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-25 21:32:02,854 - services.proxy - INFO - 正在测试代理: http://127.0.0.1:7890
+2025-06-25 21:32:03,748 - services.proxy - INFO - 代理测试成功: http://127.0.0.1:7890
+2025-06-25 21:32:03,749 - services.proxy - INFO - 找到可用代理: http://127.0.0.1:7890
+2025-06-25 21:32:03,749 - core.downloader - INFO - 初始化下载器，代理：http://127.0.0.1:7890，超时：30.0秒
+2025-06-25 21:32:05,043 - plugins.youtube.downloader - INFO - 使用代理: http://127.0.0.1:7890
+2025-06-25 22:12:02,925 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-25 22:58:49,087 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-25 23:04:07,067 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-25 23:04:34,513 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-25 23:04:50,623 - src.main - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-25 23:05:16,500 - src.main - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-25 23:05:34,057 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-25 23:05:37,389 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-25 23:08:32,953 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-25 23:08:32,953 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
+2025-06-25 23:08:32,953 - __main__ - INFO - __file__: E:\test\6.25\src\main.py
+2025-06-25 23:09:39,302 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-25 23:09:39,302 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
+2025-06-25 23:09:39,303 - __main__ - INFO - __file__: E:\test\6.25\src\main.py
+2025-06-25 23:19:07,859 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-25 23:19:07,859 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
+2025-06-25 23:19:07,859 - __main__ - INFO - __file__: E:\test\6.25\src\main.py
+2025-06-25 23:57:12,622 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-25 23:57:12,622 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
+2025-06-25 23:57:12,624 - __main__ - INFO - __file__: E:\test\6.25\src\main.py
+2025-06-26 07:12:17,513 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-26 07:12:17,513 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
+2025-06-26 07:12:17,514 - __main__ - INFO - __file__: E:\test\6.25\src\main.py
+2025-06-26 07:46:30,037 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-26 07:46:30,038 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
+2025-06-26 07:46:30,039 - __main__ - INFO - __file__: E:\test\6.25\src\main.py
+2025-06-26 07:46:42,988 - ui.main_window - ERROR - 下载失败: YouTubeDownloader.__init__() missing 1 required positional argument: 'save_dir'
+2025-06-26 08:08:40,917 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-26 08:08:40,917 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
+2025-06-26 08:08:40,917 - __main__ - INFO - __file__: E:\test\6.25\src\main.py

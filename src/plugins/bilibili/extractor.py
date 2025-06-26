@@ -10,7 +10,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
 import requests
 from bs4 import BeautifulSoup
-from services.proxy import get_current_proxy
+from src.services.proxy import get_current_proxy
 from .sign import generate_sign
 from core.exceptions import (
     BiliBiliError,
@@ -202,9 +202,79 @@ class BilibiliExtractor:
             
         Raises:
             BiliBiliError: API调用出错
+            ParsingError: CID为空
         """
         params = {"bvid": bvid}
-        return self._make_api_request(self.API_VIDEO_INFO, params)
+        data = self._make_api_request(self.API_VIDEO_INFO, params)
+        
+        # 检查CID是否为空
+        if not data.get("cid"):
+            raise ParsingError("视频CID不能为空")
+            
+        # 截断过长标题
+        if len(data.get("title", "")) > 100:
+            data["title"] = data["title"][:97] + "..."
+            
+        # 检查磁盘空间
+        if "pages" in data:
+            total_size = sum(page.get("size", 0) for page in data["pages"])
+            if not self._check_disk_space(total_size):
+                raise RuntimeError(f"磁盘空间不足，需要 {total_size / 1024 / 1024:.1f}MB")
+                
+        return data
+        
+    def _check_disk_space(self, required_bytes: int) -> bool:
+        """检查磁盘空间是否足够。
+        
+        Args:
+            required_bytes: 需要的字节数
+            
+        Returns:
+            bool: 空间是否足够
+        """
+        import os
+        
+        try:
+            # 获取当前目录的磁盘信息
+            st = os.statvfs(".")
+            free_bytes = st.f_bavail * st.f_bsize
+            
+            # 预留10%的安全空间
+            safe_free_bytes = free_bytes * 0.9
+            
+            return safe_free_bytes >= required_bytes
+        except Exception as e:
+            logger.warning(f"检查磁盘空间失败: {e}")
+            return True  # 如果无法检查，默认允许下载
+            
+    def _extract_danmaku(self, cid: str) -> Optional[str]:
+        """提取弹幕内容。
+        
+        Args:
+            cid: 视频CID
+            
+        Returns:
+            Optional[str]: 弹幕XML内容，解析失败返回None
+            
+        Raises:
+            ParsingError: 弹幕XML格式无效
+        """
+        try:
+            url = f"https://comment.bilibili.com/{cid}.xml"
+            response = requests.get(url, headers=self.headers, proxies=self.proxies)
+            response.raise_for_status()
+            
+            # 验证XML格式
+            if not response.text.startswith("<?xml"):
+                raise ParsingError("弹幕XML格式无效")
+                
+            return response.text
+        except requests.RequestException as e:
+            logger.error(f"获取弹幕失败: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"解析弹幕失败: {e}")
+            raise ParsingError(f"弹幕XML格式无效: {e}")
         
     def _get_play_info(self, bvid: str, cid: str) -> Dict[str, Any]:
         """获取视频播放信息。
@@ -310,20 +380,82 @@ class BilibiliExtractor:
             Dict[str, Any]: 解析后的数据
             
         Raises:
-            BiliBiliError: 解析出错
+            BiliBiliError: 解析失败
         """
+        # 检查错误码
         code = data.get("code", 0)
-        
-        # 处理错误响应
         if code != 0:
-            error_info = self.ERROR_CODE_MAP.get(code)
-            if error_info:
-                error_class, message = error_info
-                raise error_class(message, code)
-            else:
-                raise BiliBiliError(data.get("message", "未知错误"), code)
-                
-        return data.get("data", {})
+            error_class, message = self.ERROR_CODE_MAP.get(
+                code,
+                (BiliBiliError, f"未知错误: {data.get('message', '')}")
+            )
+            raise error_class(message)
+            
+        # 获取数据部分
+        data = data.get("data", {})
+        if not data:
+            raise ParsingError("返回数据为空")
+            
+        # 检查API版本并解析
+        if "video_data" in data:  # 旧版API
+            return self._parse_legacy_response(data)
+        else:  # 新版API
+            return self._parse_new_response(data)
+            
+    def _parse_legacy_response(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """解析旧版API响应。
+        
+        Args:
+            data: API响应数据
+            
+        Returns:
+            Dict[str, Any]: 解析后的数据
+        """
+        video_data = data["video_data"]
+        return {
+            "bvid": video_data.get("bvid", ""),
+            "aid": video_data.get("aid", 0),
+            "cid": video_data.get("cid", 0),
+            "title": video_data.get("title", ""),
+            "desc": video_data.get("desc", ""),
+            "duration": video_data.get("duration", 0),
+            "owner": {
+                "name": video_data.get("owner", {}).get("name", ""),
+                "mid": video_data.get("owner", {}).get("mid", 0)
+            },
+            "stat": video_data.get("stat", {}),
+            "pages": video_data.get("pages", []),
+            "subtitle": video_data.get("subtitle", {}),
+            "is_vip_only": bool(video_data.get("rights", {}).get("vip_only", 0)),
+            "is_area_limited": bool(video_data.get("rights", {}).get("area_limit", 0))
+        }
+        
+    def _parse_new_response(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """解析新版API响应。
+        
+        Args:
+            data: API响应数据
+            
+        Returns:
+            Dict[str, Any]: 解析后的数据
+        """
+        return {
+            "bvid": data.get("bvid", ""),
+            "aid": data.get("aid", 0),
+            "cid": data.get("cid", 0),
+            "title": data.get("title", ""),
+            "desc": data.get("desc", ""),
+            "duration": data.get("duration", 0),
+            "owner": {
+                "name": data.get("owner", {}).get("name", ""),
+                "mid": data.get("owner", {}).get("mid", 0)
+            },
+            "stat": data.get("stat", {}),
+            "pages": data.get("pages", []),
+            "subtitle": data.get("subtitle", {}),
+            "is_vip_only": bool(data.get("rights", {}).get("vip_only", 0)),
+            "is_area_limited": bool(data.get("rights", {}).get("area_limit", 0))
+        }
         
     def _parse_html(self, url: str) -> BeautifulSoup:
         """获取并解析网页。

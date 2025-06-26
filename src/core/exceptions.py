@@ -1,7 +1,46 @@
+"""异常类模块。
+
+定义项目中使用的所有异常类。
+"""
+
+class BiliBiliError(Exception):
+    """B站相关错误的基类。"""
+    pass
+
+class VIPContentError(BiliBiliError):
+    """大会员专享内容错误。"""
+    pass
+
+class RegionLockError(BiliBiliError):
+    """地区限制错误。"""
+    pass
+
+class NetworkError(BiliBiliError):
+    """网络错误。"""
+    pass
+
+class ParsingError(BiliBiliError):
+    """解析错误。"""
+    pass
+
+class RateLimitError(BiliBiliError):
+    """请求频率限制错误。"""
+    pass
+
 class DownloadCanceled(Exception):
-    """用户取消下载异常。
+    """下载取消。
     
-    当用户主动取消下载时抛出此异常。
-    下载器会负责清理临时文件和释放资源。
+    当用户取消下载时抛出。
+    """
+    pass
+
+class DanmakuError(BiliBiliError):
+    """弹幕处理错误。"""
+    pass
+
+class DownloadError(Exception):
+    """下载错误。
+    
+    当下载过程中发生错误时抛出。
     """
     pass 

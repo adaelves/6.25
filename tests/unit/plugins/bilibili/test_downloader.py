@@ -29,6 +29,10 @@ class TestBilibiliDownloader:
         self.test_url = "https://www.bilibili.com/video/BV1xx411c7mD"
         self.test_save_path = self.temp_dir / "test_video.mp4"
         
+        # 设置较短的超时时间用于测试
+        self.original_timeout = self.downloader.timeout
+        self.downloader.timeout = 5
+        
         # Mock视频信息
         self.mock_video_info = {
             "bvid": "BV1xx411c7mD",
@@ -62,10 +66,26 @@ class TestBilibiliDownloader:
         
         yield
         
+        # 恢复原始超时设置
+        self.downloader.timeout = self.original_timeout
+        
         # 清理测试文件
         if self.test_save_path.exists():
-            self.test_save_path.unlink()
-            
+            try:
+                self.test_save_path.unlink()
+            except PermissionError:
+                # Windows下可能需要等待文件释放
+                time.sleep(0.1)
+                self.test_save_path.unlink()
+                
+        # 清理临时文件
+        for temp_file in self.temp_dir.glob("*.tmp"):
+            try:
+                temp_file.unlink()
+            except (PermissionError, FileNotFoundError):
+                pass
+
+    @pytest.mark.timeout(30)  # 设置测试超时时间
     def test_download_success(self, mocker):
         """测试正常下载流程。"""
         # Mock提取器
@@ -82,11 +102,18 @@ class TestBilibiliDownloader:
             return_value=self.mock_streams
         )
         
-        # Mock分段下载
+        # Mock分段下载，添加进度回调
+        def mock_download_segment(*args, **kwargs):
+            if "progress_callback" in kwargs:
+                for i in range(0, 101, 10):
+                    kwargs["progress_callback"](i)
+                    time.sleep(0.01)  # 模拟下载进度
+            return True
+            
         mocker.patch.object(
             self.downloader,
             "_download_segment",
-            return_value=True
+            side_effect=mock_download_segment
         )
         
         # Mock合并
@@ -108,6 +135,7 @@ class TestBilibiliDownloader:
         assert result is True, "下载应该成功"
         mock_extract.assert_called_once_with(self.test_url)
         
+    @pytest.mark.timeout(10)
     def test_download_vip_only(self, mocker):
         """测试大会员专享视频。"""
         # 设置为大会员视频
@@ -223,6 +251,7 @@ class TestBilibiliDownloader:
             stream = self.downloader._select_best_quality(test_streams)
             assert stream["quality"] == 80, "应该选择最高清晰度"
             
+    @pytest.mark.timeout(10)
     @pytest.mark.benchmark
     def test_download_performance(self, benchmark, mocker):
         """测试下载性能。"""
@@ -237,10 +266,16 @@ class TestBilibiliDownloader:
             "_get_video_streams",
             return_value=self.mock_streams
         )
+        
+        # Mock下载过程，使用较短的延迟
+        def mock_download(*args, **kwargs):
+            time.sleep(0.01)  # 使用固定的短延迟
+            return True
+            
         mocker.patch.object(
             self.downloader,
             "_download_segment",
-            return_value=True
+            side_effect=mock_download
         )
         mocker.patch.object(
             self.downloader,

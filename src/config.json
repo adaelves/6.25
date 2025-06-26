@@ -1,0 +1,38 @@
+{
+  "app": {
+    "name": "Video Downloader",
+    "version": "1.0.0",
+    "author": "Your Name",
+    "description": "视频下载器"
+  },
+  "download": {
+    "max_concurrent_tasks": 3,
+    "chunk_size": 8192,
+    "buffer_size": 1048576,
+    "timeout": 30,
+    "retries": 3,
+    "max_speed": 0,
+    "temp_dir": "temp",
+    "output_dir": "downloads"
+  },
+  "network": {
+    "proxy": null,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+  },
+  "task": {
+    "sort": {
+      "field": "created_at",
+      "order": "descending"
+    },
+    "default_group": "未分组"
+  },
+  "ui": {
+    "theme": "light",
+    "language": "zh_CN",
+    "font_family": "Microsoft YaHei",
+    "font_size": 12
+  },
+  "appearance": {
+    "theme": "深色"
+  }
+}

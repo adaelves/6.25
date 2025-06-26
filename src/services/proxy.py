@@ -1,6 +1,6 @@
-"""代理管理模块。
+"""代理服务模块。
 
-该模块提供代理服务器的管理功能。
+提供代理服务器配置和管理功能。
 """
 
 import logging
@@ -273,9 +273,9 @@ class ProxyManager:
 proxy_manager = ProxyManager()
 
 def get_current_proxy() -> Optional[str]:
-    """获取当前可用的代理地址（全局函数）。
+    """获取当前代理设置。
     
     Returns:
-        Optional[str]: 代理地址，如果没有可用代理则返回None
+        Optional[str]: 代理服务器地址，如果未设置则返回None
     """
-    return proxy_manager.get_current_proxy() 
+    return os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY") 
