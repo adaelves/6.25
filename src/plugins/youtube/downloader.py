@@ -12,9 +12,9 @@ import yt_dlp
 
 from src.core.downloader import BaseDownloader
 from src.core.exceptions import DownloadError
-from src.core.config import DownloaderConfig
 from src.core.speed_limiter import SpeedLimiter
 from .extractor import YouTubeExtractor
+from .config import YouTubeDownloaderConfig
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class YouTubeDownloader(BaseDownloader):
     支持速度限制和并发控制。
     
     Attributes:
-        config: DownloaderConfig, 下载器配置
+        config: YouTubeDownloaderConfig, 下载器配置
         progress_callback: Optional[Callable], 进度回调函数
         speed_limiter: Optional[SpeedLimiter], 速度限制器
         max_height: int, 最大视频高度（像素）
@@ -47,26 +47,25 @@ class YouTubeDownloader(BaseDownloader):
     
     def __init__(
         self,
-        config: DownloaderConfig,
-        max_height: int = 1080,
-        prefer_quality: str = '1080p',
-        merge_output_format: str = 'mp4'
+        config: YouTubeDownloaderConfig
     ):
         """初始化下载器。
         
         Args:
             config: 下载器配置
-            max_height: 最大视频高度
-            prefer_quality: 优先选择的视频质量
-            merge_output_format: 合并后的输出格式
         """
-        super().__init__(save_dir=str(config.save_dir))
+        super().__init__(
+            save_dir=str(config.save_dir),
+            proxy=config.proxy,
+            timeout=config.timeout,
+            max_retries=config.max_retries
+        )
         self.config = config
-        self.max_height = max_height
-        self.prefer_quality = prefer_quality
-        self.merge_output_format = merge_output_format
+        self.max_height = config.max_height
+        self.prefer_quality = config.prefer_quality
+        self.merge_output_format = config.merge_output_format
         self.speed_limiter = (
-            SpeedLimiter(config.speed_limit) if config.speed_limit > 0 else None
+            SpeedLimiter(config.speed_limit) if config.speed_limit is not None and config.speed_limit > 0 else None
         )
         
     def _get_format_selector(self) -> str:
@@ -78,10 +77,7 @@ class YouTubeDownloader(BaseDownloader):
         height = self.QUALITIES.get(self.prefer_quality, 1080)
         height = min(height, self.max_height)
         
-        return (
-            f"bestvideo[height<={height}]"
-            "+bestaudio/best[height<={height}]"
-        )
+        return f"bestvideo[height<={height}]+bestaudio/best[height<={height}]"
         
     def _progress_hook(self, d: Dict[str, Any]) -> None:
         """下载进度回调。
@@ -93,23 +89,30 @@ class YouTubeDownloader(BaseDownloader):
             # 计算进度
             total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
             downloaded = d.get('downloaded_bytes', 0)
+            speed = d.get('speed', 0)
+            eta = d.get('eta', 0)
             
-            if total > 0:
+            if total > 0 and downloaded is not None:
                 progress = downloaded / total
-                speed = d.get('speed', 0)
-                eta = d.get('eta', 0)
                 
                 # 应用速度限制
-                if self.speed_limiter and speed > self.config.speed_limit:
-                    self.speed_limiter.wait_sync(
-                        int(speed * self.config.chunk_size / 1024)
-                    )
-                    speed = self.speed_limiter.current_speed
-                    
+                if self.speed_limiter and speed and speed > self.config.speed_limit:
+                    try:
+                        self.speed_limiter.wait_sync(
+                            int(speed * self.config.chunk_size / 1024)
+                        )
+                        speed = self.speed_limiter.current_speed
+                    except (TypeError, ValueError) as e:
+                        logger.warning(f"速度限制计算出错: {e}")
+                        speed = 0
+                
+                speed_text = f"{speed/1024:.1f} KB/s" if speed else "Unknown"
+                eta_text = f"{eta}s" if eta else "Unknown"
+                
                 self.update_progress(
                     progress,
                     f"下载进度: {downloaded}/{total} bytes"
-                    f" ({speed/1024:.1f} KB/s, ETA: {eta}s)"
+                    f" ({speed_text}, ETA: {eta_text})"
                 )
                 
     def download(self, url: str, save_path: Optional[Path] = None) -> bool:
@@ -130,7 +133,8 @@ class YouTubeDownloader(BaseDownloader):
             # 确定保存路径
             if save_path is None:
                 info = self.get_video_info(url)
-                filename = self.config.format_filename(info)
+                filename = f"{info['title']}_{info['quality']}.{self.merge_output_format}"
+                filename = "".join(c for c in filename if c.isalnum() or c in "._- ")
                 save_path = self.config.save_dir / filename
                 
             # 确保输出目录存在
@@ -175,9 +179,12 @@ class YouTubeDownloader(BaseDownloader):
                 
             return True
             
+        except yt_dlp.utils.DownloadError as e:
+            logger.error(f"下载失败: {e}")
+            raise DownloadError(str(e))
         except Exception as e:
             logger.error(f"下载失败: {e}")
-            raise DownloadError(f"下载失败: {e}")
+            raise DownloadError(str(e))
             
     def get_video_info(self, url: str) -> Dict[str, Any]:
         """获取视频信息。
@@ -193,33 +200,14 @@ class YouTubeDownloader(BaseDownloader):
             DownloadError: 获取信息失败
         """
         try:
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': True
-            }
-            
-            if self.config.proxy:
-                ydl_opts['proxy'] = self.config.proxy
-                
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                
-            # 转换为统一格式
-            return {
-                'title': info.get('title', ''),
-                'author': info.get('uploader', ''),
-                'id': info.get('id', ''),
-                'duration': info.get('duration', 0),
-                'views': info.get('view_count', 0),
-                'likes': info.get('like_count', 0),
-                'description': info.get('description', ''),
-                'category': info.get('categories', [''])[0],
-                'tags': info.get('tags', []),
-                'quality': self.prefer_quality,
-                'ext': self.merge_output_format
-            }
+            extractor = YouTubeExtractor(
+                proxy=self.config.proxy,
+                timeout=self.config.timeout
+            )
+            info = extractor.extract_info(url)
+            info['quality'] = self.prefer_quality
+            return info
             
         except Exception as e:
             logger.error(f"获取视频信息失败: {e}")
-            raise DownloadError(f"获取视频信息失败: {e}") 
+            raise DownloadError(str(e)) 

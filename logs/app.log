@@ -99,3 +99,55 @@
 2025-06-26 20:12:40,289 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
 2025-06-26 20:12:40,289 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
 2025-06-26 20:12:40,289 - __main__ - INFO - __file__: E:\test\6.25\src\main.py
+2025-06-26 21:15:30,331 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-26 21:15:30,331 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
+2025-06-26 21:15:30,332 - __main__ - INFO - __file__: E:\test\6.25\src\main.py
+2025-06-26 21:15:30,364 - src.core.downloader - INFO - 初始化下载器: save_dir=downloads, proxy=None
+2025-06-26 21:16:40,787 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-26 21:16:40,787 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
+2025-06-26 21:16:40,788 - __main__ - INFO - __file__: E:\test\6.25\src\main.py
+2025-06-26 21:16:40,811 - src.core.downloader - INFO - 初始化下载器: save_dir=downloads, proxy=None
+2025-06-26 21:39:20,372 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-26 21:39:20,372 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
+2025-06-26 21:39:20,374 - __main__ - INFO - __file__: E:\test\6.25\src\main.py
+2025-06-26 21:39:20,404 - src.core.downloader - INFO - 初始化下载器: save_dir=downloads, proxy=None
+2025-06-26 21:40:40,314 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-26 21:40:40,314 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
+2025-06-26 21:40:40,314 - __main__ - INFO - __file__: E:\test\6.25\src\main.py
+2025-06-26 21:40:40,336 - src.core.downloader - INFO - 初始化下载器: save_dir=downloads, proxy=None
+2025-06-26 21:40:48,771 - video_downloader - INFO - 开始下载: https://www.youtube.com/watch?v=1WIm_QeieNA
+2025-06-26 21:40:48,772 - video_downloader - ERROR - 下载出错: 同步下载方法尚未实现
+2025-06-26 21:48:13,569 - src.plugins.twitter.downloader - INFO - 已请求取消下载
+2025-06-26 21:48:13,570 - video_downloader - INFO - 应用程序关闭
+2025-06-26 21:48:22,764 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-26 21:48:22,765 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
+2025-06-26 21:48:22,765 - __main__ - INFO - __file__: E:\test\6.25\src\main.py
+2025-06-26 21:48:22,786 - src.core.downloader - INFO - 初始化下载器: save_dir=downloads, proxy=http://127.0.0.1:7890
+2025-06-26 21:48:28,458 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-26 21:48:28,458 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
+2025-06-26 21:48:28,458 - __main__ - INFO - __file__: E:\test\6.25\src\main.py
+2025-06-26 21:48:28,482 - src.core.downloader - INFO - 初始化下载器: save_dir=downloads, proxy=http://127.0.0.1:7890
+2025-06-26 21:51:02,911 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-26 21:51:02,911 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
+2025-06-26 21:51:02,911 - __main__ - INFO - __file__: E:\test\6.25\src\main.py
+2025-06-26 21:51:02,935 - src.core.downloader - INFO - 初始化下载器: save_dir=downloads, proxy=http://127.0.0.1:7890
+2025-06-26 21:51:08,959 - gui - INFO - 开始下载: https://www.youtube.com/watch?v=1WIm_QeieNA
+2025-06-26 21:51:14,398 - src.plugins.youtube.downloader - ERROR - 下载失败: Invalid filter specification 'height<={height}'
+2025-06-26 21:51:14,399 - gui - ERROR - 下载出错: DownloadError() takes no keyword arguments
+2025-06-26 21:52:51,830 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-26 21:52:51,830 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
+2025-06-26 21:52:51,830 - __main__ - INFO - __file__: E:\test\6.25\src\main.py
+2025-06-26 21:52:51,850 - src.core.downloader - INFO - 初始化下载器: save_dir=downloads, proxy=http://127.0.0.1:7890
+2025-06-26 21:52:56,653 - gui - INFO - 开始下载: https://www.youtube.com/watch?v=1WIm_QeieNA
+2025-06-26 21:53:08,373 - src.plugins.youtube.downloader - ERROR - 下载失败: unsupported operand type(s) for /: 'NoneType' and 'int'
+2025-06-26 21:53:08,373 - gui - ERROR - 下载出错: unsupported operand type(s) for /: 'NoneType' and 'int'
+2025-06-26 21:56:58,245 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-26 21:56:58,245 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
+2025-06-26 21:56:58,245 - __main__ - INFO - __file__: E:\test\6.25\src\main.py
+2025-06-26 21:56:58,266 - src.core.downloader - INFO - 初始化下载器: save_dir=downloads, proxy=http://127.0.0.1:7890
+2025-06-26 21:57:05,545 - gui - INFO - 开始下载: https://www.youtube.com/watch?v=1WIm_QeieNA
+2025-06-26 21:57:23,104 - gui - INFO - 下载完成
+2025-06-26 21:57:53,590 - gui - INFO - 开始下载: https://cn.pornhub.com/view_video.php?viewkey=6779248bc1b3d
+2025-06-26 21:57:57,555 - src.plugins.youtube.extractor - WARNING - 视频有年龄限制: https://cn.pornhub.com/view_video.php?viewkey=6779248bc1b3d
+2025-06-26 21:58:07,886 - src.plugins.youtube.downloader - ERROR - 下载失败: [0;31mERROR:[0m [PornHub] 6779248bc1b3d: Unable to download webpage: EOF occurred in violation of protocol (_ssl.c:1007) (caused by SSLError('EOF occurred in violation of protocol (_ssl.c:1007)')); please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U
+2025-06-26 21:58:08,291 - gui - ERROR - 下载出错: [0;31mERROR:[0m [PornHub] 6779248bc1b3d: Unable to download webpage: EOF occurred in violation of protocol (_ssl.c:1007) (caused by SSLError('EOF occurred in violation of protocol (_ssl.c:1007)')); please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U

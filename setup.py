@@ -1,18 +1,42 @@
-"""安装配置文件。"""
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""
+视频下载器安装脚本。
+"""
 
 from setuptools import setup, find_packages
 
+with open("README.md", "r", encoding="utf-8") as fh:
+    long_description = fh.read()
+
+with open("requirements.txt", "r", encoding="utf-8") as fh:
+    requirements = [line.strip() for line in fh if line.strip() and not line.startswith("#")]
+
 setup(
-    name="twitter-video-extractor",
-    version="0.1.0",
-    package_dir={"": "src"},
-    packages=find_packages(where="src"),
-    install_requires=[
-        "playwright>=1.53.0",
-        "pytest>=7.0.0",
-        "pytest-playwright>=0.7.0",
-        "aiohttp>=3.8.0",
-        "beautifulsoup4>=4.9.0"
+    name="video-downloader",
+    version="1.0.0",
+    author="Your Name",
+    author_email="your.email@example.com",
+    description="A video downloader with GUI",
+    long_description=long_description,
+    long_description_content_type="text/markdown",
+    url="https://github.com/yourusername/video-downloader",
+    packages=find_packages(),
+    classifiers=[
+        "Development Status :: 3 - Alpha",
+        "Intended Audience :: End Users/Desktop",
+        "Topic :: Multimedia :: Video",
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Operating System :: OS Independent",
     ],
-    python_requires=">=3.10"
+    python_requires=">=3.10",
+    install_requires=requirements,
+    entry_points={
+        "console_scripts": [
+            "video-downloader=src.main:main",
+        ],
+    },
 ) 

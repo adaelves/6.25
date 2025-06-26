@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
-from ui.main_window import MainWindow
+from gui.main_window import MainWindow
 
 # 获取项目根目录
 PROJECT_ROOT = Path(__file__).parent.parent.absolute()
