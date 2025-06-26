@@ -4,6 +4,7 @@
 1. Cloudflare 检测绕过
 2. Cookies 管理
 3. 自动重试机制
+4. 浏览器指纹随机化
 """
 
 import json
@@ -12,20 +13,74 @@ import logging
 import random
 import requests
 from pathlib import Path
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple, Any
 from functools import wraps
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 from fake_useragent import UserAgent
-import undetected_chromedriver as uc
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
+import undetected_playwright as playwright
 
 from src.core.exceptions import DownloadError
 
 logger = logging.getLogger(__name__)
+
+def random_viewport() -> Dict[str, int]:
+    """生成随机的视口大小。
+    
+    Returns:
+        Dict[str, int]: 包含宽度和高度的字典
+    """
+    common_resolutions = [
+        (1920, 1080),
+        (1366, 768),
+        (1536, 864),
+        (1440, 900),
+        (1280, 720)
+    ]
+    width, height = random.choice(common_resolutions)
+    return {"width": width, "height": height}
+
+def random_platform() -> str:
+    """生成随机的平台信息。
+    
+    Returns:
+        str: 平台字符串
+    """
+    platforms = [
+        "Windows NT 10.0",
+        "Windows NT 11.0",
+        "Macintosh; Intel Mac OS X 10_15_7",
+        "X11; Linux x86_64"
+    ]
+    return random.choice(platforms)
+
+def random_browser_version() -> Tuple[str, str]:
+    """生成随机的浏览器版本信息。
+    
+    Returns:
+        Tuple[str, str]: (浏览器名称, 版本号)
+    """
+    chrome_versions = [
+        "120.0.0.0",
+        "119.0.0.0",
+        "118.0.0.0",
+        "117.0.0.0"
+    ]
+    return "Chrome", random.choice(chrome_versions)
+
+def random_ua() -> str:
+    """生成随机的 User-Agent。
+    
+    Returns:
+        str: User-Agent 字符串
+    """
+    platform = random_platform()
+    browser, version = random_browser_version()
+    return (
+        f"Mozilla/5.0 ({platform}) "
+        f"AppleWebKit/537.36 (KHTML, like Gecko) "
+        f"{browser}/{version} Safari/537.36"
+    )
 
 def retry(max_attempts: int = 3, delay: float = 1.0):
     """重试装饰器。
@@ -58,7 +113,7 @@ def retry(max_attempts: int = 3, delay: float = 1.0):
 class CloudflareBypass:
     """Cloudflare 绕过工具。
     
-    使用 undetected-chromedriver 获取有效的 cookies。
+    使用 undetected-playwright 获取有效的 cookies。
     支持自动保存和加载 cookies。
     
     Attributes:
@@ -95,7 +150,7 @@ class CloudflareBypass:
         self.proxy = proxy
         self.timeout = timeout
         self.cookies_file = cookies_file or Path.home() / ".twitter_cookies"
-        self.user_agent = user_agent or UserAgent().random
+        self.user_agent = user_agent or random_ua()
         self.cookies_ttl = cookies_ttl
         self.headers = {"User-Agent": self.user_agent}
         self.cookies = {}
@@ -103,7 +158,7 @@ class CloudflareBypass:
     def bypass_5s_challenge(self, url: str) -> Dict[str, str]:
         """绕过 Cloudflare 5 秒盾。
         
-        使用 undetected-chromedriver 绕过 Cloudflare 5 秒盾检测。
+        使用 undetected-playwright 绕过 Cloudflare 5 秒盾检测。
         
         Args:
             url: 目标URL
@@ -115,34 +170,33 @@ class CloudflareBypass:
             DownloadError: 绕过失败
         """
         try:
-            # 配置 Chrome 选项
-            options = uc.ChromeOptions()
-            options.add_argument("--headless=new")  # 无头模式
-            options.add_argument("--disable-gpu")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument(f"user-agent={self.user_agent}")
-            
-            # 配置代理
-            if self.proxy:
-                options.add_argument(f"--proxy-server={self.proxy}")
-            
-            # 创建 undetected-chromedriver 实例
-            driver = uc.Chrome(options=options)
+            # 启动浏览器
+            browser = playwright.chromium.launch(
+                stealth=True,
+                headless=True
+            )
             
             try:
+                # 创建新的上下文
+                context = browser.new_context(
+                    user_agent=self.user_agent,
+                    viewport=random_viewport(),
+                    proxy={"server": self.proxy} if self.proxy else None
+                )
+                
+                # 创建新页面
+                page = context.new_page()
+                
                 # 访问目标页面
                 logger.info(f"正在访问: {url}")
-                driver.get(url)
+                page.goto(url, timeout=self.timeout * 1000)  # 毫秒
                 
                 # 等待视频元素出现（表示已通过 Cloudflare 检测）
-                WebDriverWait(driver, self.timeout).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "video"))
-                )
+                page.wait_for_selector("video", timeout=self.timeout * 1000)
                 
                 # 获取 cookies
                 cookies = {}
-                for cookie in driver.get_cookies():
+                for cookie in context.cookies():
                     cookies[cookie["name"]] = cookie["value"]
                 
                 # 保存 cookies
@@ -151,7 +205,7 @@ class CloudflareBypass:
                 return cookies
                 
             finally:
-                driver.quit()
+                browser.close()
                 
         except Exception as e:
             logger.error(f"绕过 Cloudflare 5 秒盾失败: {e}")
@@ -199,11 +253,10 @@ class CloudflareBypass:
                 else:
                     logger.warning("已保存的 cookies 无效")
                     return None
-                    
         except Exception as e:
             logger.error(f"加载 cookies 失败: {e}")
-        return None
-        
+            return None
+            
     def _verify_cookies(self, cookies: Dict[str, str]) -> bool:
         """验证 cookies 是否有效。
         
@@ -214,34 +267,27 @@ class CloudflareBypass:
             bool: cookies 是否有效
         """
         try:
-            # 构建请求头
-            headers = {
-                "User-Agent": self.user_agent,
-                "Accept": "application/json",
-                "Cookie": "; ".join(f"{k}={v}" for k, v in cookies.items())
-            }
-            
             # 发送测试请求
             response = requests.get(
-                "https://twitter.com/i/api/2/guide.json",
-                headers=headers,
+                "https://twitter.com/home",
+                headers=self.headers,
+                cookies=cookies,
                 proxies={"http": self.proxy, "https": self.proxy} if self.proxy else None,
-                timeout=self.timeout,
-                verify=False
+                timeout=self.timeout
             )
             
-            # 检查响应
-            return response.status_code == 200 and "cf_clearance" not in response.text
+            # 检查是否需要 Cloudflare 验证
+            return not any(pattern in response.text for pattern in self.CF_PATTERNS)
             
         except Exception as e:
-            logger.warning(f"验证 cookies 时出错: {e}")
+            logger.error(f"验证 cookies 失败: {e}")
             return False
             
     @retry(max_attempts=3, delay=2.0)
     def bypass_cloudflare(self, url: str) -> Dict[str, str]:
-        """绕过 Cloudflare 检测并获取 cookies。
+        """绕过 Cloudflare 检测。
         
-        首先尝试加载已保存的 cookies，如果无效则使用 bypass_5s_challenge。
+        首先尝试使用缓存的 cookies，如果无效则尝试绕过 5 秒盾。
         
         Args:
             url: 目标URL
@@ -252,23 +298,22 @@ class CloudflareBypass:
         Raises:
             DownloadError: 绕过失败
         """
-        # 尝试加载已保存的 cookies
-        cookies = self._load_cookies()
-        if cookies:
+        # 尝试加载缓存的 cookies
+        if cookies := self._load_cookies():
             return cookies
             
-        # 使用 5 秒盾绕过
+        # 如果没有有效的缓存，尝试绕过 5 秒盾
         return self.bypass_5s_challenge(url)
 
 def bypass_cloudflare(url: str, 
                      proxy: Optional[str] = None,
                      timeout: float = 30.0) -> Dict[str, str]:
-    """便捷函数：绕过 Cloudflare 检测。
+    """快捷函数：绕过 Cloudflare 检测。
     
     Args:
         url: 目标URL
-        proxy: 可选的代理服务器地址
-        timeout: 超时时间（秒）
+        proxy: 代理服务器地址
+        timeout: 等待超时时间
         
     Returns:
         Dict[str, str]: 包含有效 cookies 的字典
