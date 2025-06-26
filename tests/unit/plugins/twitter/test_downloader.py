@@ -1,40 +1,264 @@
-"""Twitter下载器测试模块。"""
+"""Twitter下载器测试模块。
+
+测试推文媒体下载功能。
+"""
 
 import os
 import json
 import pytest
 import asyncio
+import tempfile
+import time
 from pathlib import Path
 from unittest.mock import Mock, patch, AsyncMock
+import requests
 
 from src.plugins.twitter.config import TwitterDownloaderConfig
 from src.plugins.twitter.downloader import TwitterDownloader, SpeedLimiter
+from src.core.config import DownloaderConfig
+from src.core.exceptions import DownloadError
 
 @pytest.fixture
-def config(tmp_path):
-    """创建测试配置。"""
-    return TwitterDownloaderConfig(
-        save_dir=tmp_path,
-        filename_template="{author}/{tweet_id}/{media_type}_{index}{ext}",
-        max_concurrent_downloads=2,
-        speed_limit=1024 * 1024,  # 1MB/s
-        chunk_size=8192,
-        max_retries=2,
-        proxy="http://127.0.0.1:7890",
-        timeout=5.0,
-        api_token="test_token"
-    )
+def config():
+    """创建下载器配置。"""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        yield DownloaderConfig(
+            save_dir=Path(temp_dir),
+            max_concurrent_downloads=2,
+            speed_limit=1024 * 1024,  # 1MB/s
+            chunk_size=8192
+        )
 
 @pytest.fixture
-def mock_extractor():
-    """创建模拟的提取器。"""
-    with patch("src.plugins.twitter.downloader.TwitterExtractor") as mock:
-        yield mock.return_value
+def mock_extractor(mocker):
+    """模拟信息提取器。"""
+    extractor = Mock()
+    mocker.patch('src.plugins.twitter.downloader.TwitterExtractor', return_value=extractor)
+    return extractor
 
 @pytest.fixture
-def downloader(config, mock_extractor):
-    """创建测试下载器。"""
+def downloader(config):
+    """创建TwitterDownloader实例。"""
     return TwitterDownloader(config)
+
+@pytest.fixture
+def tweet_info():
+    """测试用推文信息。"""
+    return {
+        'id': '1234567890',
+        'text': 'Test tweet with media',
+        'author': {
+            'name': 'Test User',
+            'screen_name': 'testuser'
+        },
+        'created_at': '2024-01-01T12:00:00Z',
+        'media': [
+            {
+                'type': 'photo',
+                'url': 'https://example.com/photo.jpg'
+            },
+            {
+                'type': 'video',
+                'url': 'https://example.com/video.mp4'
+            }
+        ]
+    }
+
+def test_init(downloader):
+    """测试初始化。"""
+    assert downloader.config is not None
+    assert downloader.extractor is not None
+    assert downloader.speed_limiter is not None
+
+def test_download_media_success(downloader, mock_extractor, tweet_info):
+    """测试成功下载媒体。"""
+    # 模拟提取器返回
+    mock_extractor.extract_tweet_info.return_value = tweet_info
+    
+    # 模拟下载响应
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.headers = {'content-length': '1024'}
+    mock_response.iter_content.return_value = [b'test data']
+    
+    with patch('requests.get', return_value=mock_response):
+        result = downloader.download('https://twitter.com/user/status/1234567890')
+        assert result
+        
+        # 验证文件是否下载
+        for media in tweet_info['media']:
+            filename = f"{tweet_info['author']['screen_name']}_{tweet_info['id']}_{media['type']}"
+            file_path = downloader.config.save_dir / filename
+            assert file_path.exists()
+
+def test_download_media_429(downloader, mock_extractor, tweet_info):
+    """测试429错误处理。"""
+    mock_extractor.extract_tweet_info.return_value = tweet_info
+    
+    # 模拟429响应
+    mock_response = Mock()
+    mock_response.status_code = 429
+    mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError('Rate limited')
+    
+    with patch('requests.get', return_value=mock_response):
+        with pytest.raises(DownloadError, match='Rate limited'):
+            downloader.download('https://twitter.com/user/status/1234567890')
+
+def test_download_media_retry(downloader, mock_extractor, tweet_info):
+    """测试重试机制。"""
+    mock_extractor.extract_tweet_info.return_value = tweet_info
+    
+    # 模拟响应序列：429 -> 200
+    responses = [
+        Mock(status_code=429, raise_for_status=Mock(side_effect=requests.exceptions.HTTPError('Rate limited'))),
+        Mock(status_code=200, headers={'content-length': '1024'}, iter_content=Mock(return_value=[b'test data']))
+    ]
+    
+    with patch('requests.get', side_effect=responses):
+        result = downloader.download('https://twitter.com/user/status/1234567890', max_retries=2)
+        assert result
+
+def test_download_media_invalid_url(downloader):
+    """测试无效URL。"""
+    with pytest.raises(ValueError, match='Invalid tweet URL'):
+        downloader.download('invalid_url')
+
+def test_download_media_no_media(downloader, mock_extractor):
+    """测试无媒体推文。"""
+    tweet_info = {
+        'id': '1234567890',
+        'text': 'Test tweet without media',
+        'author': {'name': 'Test User', 'screen_name': 'testuser'},
+        'media': []
+    }
+    mock_extractor.extract_tweet_info.return_value = tweet_info
+    
+    with pytest.raises(DownloadError, match='No media found'):
+        downloader.download('https://twitter.com/user/status/1234567890')
+
+def test_download_media_partial(downloader, mock_extractor, tweet_info):
+    """测试部分媒体下载失败。"""
+    mock_extractor.extract_tweet_info.return_value = tweet_info
+    
+    # 模拟第一个媒体下载成功，第二个失败
+    responses = [
+        Mock(status_code=200, headers={'content-length': '1024'}, iter_content=Mock(return_value=[b'test data'])),
+        Mock(status_code=404, raise_for_status=Mock(side_effect=requests.exceptions.HTTPError('Not found')))
+    ]
+    
+    with patch('requests.get', side_effect=responses):
+        result = downloader.download('https://twitter.com/user/status/1234567890')
+        assert not result  # 部分失败应该返回False
+
+def test_download_media_with_progress(downloader, mock_extractor, tweet_info):
+    """测试带进度回调的下载。"""
+    mock_extractor.extract_tweet_info.return_value = tweet_info
+    
+    # 模拟下载响应
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.headers = {'content-length': '1024'}
+    mock_response.iter_content.return_value = [b'test data'] * 4
+    
+    progress_values = []
+    def progress_callback(value, message):
+        progress_values.append(value)
+    
+    with patch('requests.get', return_value=mock_response):
+        downloader.download(
+            'https://twitter.com/user/status/1234567890',
+            progress_callback=progress_callback
+        )
+        assert len(progress_values) > 0
+        assert progress_values[-1] == 1.0  # 最后应该达到100%
+
+def test_download_media_with_speed_limit(downloader, mock_extractor, tweet_info):
+    """测试速度限制。"""
+    mock_extractor.extract_tweet_info.return_value = tweet_info
+    
+    # 模拟大文件下载
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.headers = {'content-length': str(2 * 1024 * 1024)}  # 2MB
+    mock_response.iter_content.return_value = [b'x' * 1024] * 2048
+    
+    start_time = time.time()
+    with patch('requests.get', return_value=mock_response):
+        downloader.download('https://twitter.com/user/status/1234567890')
+    duration = time.time() - start_time
+    
+    # 由于速度限制为1MB/s，2MB的文件应该至少需要2秒
+    assert duration >= 2.0
+
+def test_download_media_concurrent(downloader, mock_extractor):
+    """测试并发下载。"""
+    # 创建多个媒体文件的推文
+    tweet_info = {
+        'id': '1234567890',
+        'author': {'screen_name': 'testuser'},
+        'media': [
+            {'type': 'photo', 'url': f'https://example.com/photo{i}.jpg'}
+            for i in range(4)
+        ]
+    }
+    mock_extractor.extract_tweet_info.return_value = tweet_info
+    
+    # 模拟下载响应
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.headers = {'content-length': '1024'}
+    mock_response.iter_content.return_value = [b'test data']
+    
+    with patch('requests.get', return_value=mock_response):
+        result = downloader.download('https://twitter.com/user/status/1234567890')
+        assert result
+        
+        # 验证所有文件都已下载
+        for i in range(4):
+            file_path = downloader.config.save_dir / f'testuser_1234567890_photo_{i}.jpg'
+            assert file_path.exists()
+
+def test_cleanup_on_error(downloader, mock_extractor, tweet_info):
+    """测试错误时的清理。"""
+    mock_extractor.extract_tweet_info.return_value = tweet_info
+    
+    # 模拟下载中断
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.headers = {'content-length': '1024'}
+    mock_response.iter_content.side_effect = Exception('Download interrupted')
+    
+    with patch('requests.get', return_value=mock_response):
+        with pytest.raises(DownloadError):
+            downloader.download('https://twitter.com/user/status/1234567890')
+            
+        # 验证临时文件已清理
+        for media in tweet_info['media']:
+            temp_path = downloader.config.save_dir / f"{tweet_info['author']['screen_name']}_{tweet_info['id']}_{media['type']}.part"
+            assert not temp_path.exists()
+
+def test_download_media_custom_path(downloader, mock_extractor, tweet_info):
+    """测试自定义保存路径。"""
+    mock_extractor.extract_tweet_info.return_value = tweet_info
+    
+    # 模拟下载响应
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.headers = {'content-length': '1024'}
+    mock_response.iter_content.return_value = [b'test data']
+    
+    custom_path = downloader.config.save_dir / 'custom' / 'path'
+    with patch('requests.get', return_value=mock_response):
+        result = downloader.download(
+            'https://twitter.com/user/status/1234567890',
+            save_dir=custom_path
+        )
+        assert result
+        
+        # 验证文件保存在自定义路径
+        for media in tweet_info['media']:
+            file_path = custom_path / f"{tweet_info['author']['screen_name']}_{tweet_info['id']}_{media['type']}"
+            assert file_path.exists()
 
 def test_config_validation(tmp_path):
     """测试配置验证。"""
