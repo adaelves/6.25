@@ -1,48 +1,50 @@
-import asyncio
-import logging
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""
+下载器测试模块。
+"""
+
+import os
+import sys
 from pathlib import Path
-from src.plugins.twitter.downloader import TwitterDownloader
-from src.plugins.twitter.config import TwitterDownloaderConfig
 
-# 配置日志
-logging.basicConfig(level=logging.INFO,
-                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+from src.core.downloader import BaseDownloader
+from src.utils.logger import logger
 
-async def test_download():
-    # 配置下载器
-    config = TwitterDownloaderConfig(
-        save_dir=Path("downloads"),
-        proxy="http://127.0.0.1:7890",  # 设置代理
-        timeout=30,
-        max_retries=3,
-        chunk_size=1024 * 1024,  # 1MB
-        max_concurrent_downloads=2,
-        custom_headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-    )
-    
-    # 创建下载器
-    downloader = TwitterDownloader(config)
-    
-    # 测试链接
-    urls = [
-        "https://twitter.com/RonaldMorg3069/status/1938026237114429819",
-        "https://twitter.com/keith_md16717/status/1938026947776291155"
-    ]
-    
-    # 下载所有视频
-    for url in urls:
-        try:
-            print(f"\n开始下载: {url}")
-            success = await downloader.download(url)
-            print(f"下载{'成功' if success else '失败'}: {url}")
-        except Exception as e:
-            print(f"下载出错: {url}\n错误: {e}")
+def test_download(url: str, save_dir: str = "downloads") -> bool:
+    """
+    测试下载功能。
+
+    Args:
+        url: 要下载的URL
+        save_dir: 保存目录
+
+    Returns:
+        bool: 是否下载成功
+    """
+    try:
+        # 创建下载器
+        downloader = BaseDownloader(
+            save_dir=save_dir,
+            proxy="http://127.0.0.1:7890"
+        )
+
+        # 获取文件名
+        filename = os.path.basename(url)
+        save_path = Path(save_dir) / filename
+
+        # 开始下载
+        logger.info(f"开始下载: {url}")
+        success = downloader.download(url, save_path)
+        logger.info(f"下载{'成功' if success else '失败'}: {url}")
+        return success
+
+    except Exception as e:
+        logger.error(f"下载出错: {url}\n错误: {e}")
+        return False
 
 if __name__ == "__main__":
-    # 创建下载目录
-    Path("downloads").mkdir(exist_ok=True)
-    
-    # 运行测试
-    asyncio.run(test_download()) 
+    if len(sys.argv) > 1:
+        url = sys.argv[1]
+        test_download(url) 
