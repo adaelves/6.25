@@ -4,72 +4,157 @@
 ```
 project_root/
 ├── configs/          # 配置文件目录
+│   └── proxies.yaml  # 代理配置
 ├── logs/            # 日志文件目录
 ├── src/             # 源代码目录
 │   ├── core/        # 核心功能
+│   │   ├── downloader.py  # 下载器基类
+│   │   └── exceptions.py  # 异常定义
 │   ├── plugins/     # 插件目录
+│   │   ├── twitter/  # Twitter插件
+│   │   └── bilibili/ # B站插件
 │   ├── services/    # 服务层
 │   └── ui/          # 用户界面
 └── tests/           # 测试用例
+    ├── unit/       # 单元测试
+    ├── integration/ # 集成测试
+    └── performance/ # 性能测试
 ```
 
-## 功能完成情况
+## 已完成的功能组件
 
-### 1. 核心功能
-- [x] 基础下载器接口 (BaseDownloader)
-- [x] 代理管理服务
-- [x] 日志系统
-- [x] GUI界面
+### 1. 核心组件 (src/core/)
 
-### 2. YouTube插件
-- [x] 视频信息提取
-- [x] 视频下载
-- [x] 年龄限制处理
-- [x] 代理支持
-- [x] 进度显示
+#### 1.1 BaseDownloader (downloader.py)
+- 功能：定义下载器的基本接口和通用功能
+- 特点：
+  - 抽象基类设计，确保所有下载器实现统一接口
+  - 支持进度回调
+  - 支持下载取消
+  - 统一的异常处理机制
+  - 支持代理配置
+  - 支持超时重试
+  - 支持并发控制
 
-### 3. B站插件 (进行中)
-- [ ] API签名验证
-- [ ] 视频信息提取
-- [ ] 视频下载
-- [ ] 弹幕处理
+#### 1.2 异常类 (exceptions.py)
+- 功能：定义项目中使用的所有异常类
+- 特点：
+  - 层次化的异常体系
+  - 针对不同场景的专门异常类
+  - 详细的错误信息
 
-## 关键代码提示
+### 2. Twitter插件 (src/plugins/twitter/)
 
-### 代理配置
-```yaml
-# configs/proxies.yaml
-proxies:
-  - address: "127.0.0.1:7890"
-    type: "http"
-    timeout: 30
-    enabled: true
-```
+#### 2.1 TwitterDownloader (downloader.py)
+- 功能：实现Twitter视频和图片的下载
+- 特点：
+  - 支持视频和图片下载
+  - 自动选择最高质量版本
+  - 支持代理设置
+  - 支持并发下载
+  - 支持速度限制
+  - 支持进度回调
+  - 支持取消操作
+  - 使用Playwright进行内容提取
 
-### YouTube下载示例
-```python
-from plugins.youtube import YouTubeDownloader
+#### 2.2 TwitterDownloaderConfig (config.py)
+- 功能：Twitter下载器的配置管理
+- 特点：
+  - 使用dataclass简化配置
+  - 支持配置序列化
+  - 提供默认值
+  - 支持配置验证
 
-downloader = YouTubeDownloader()
-info = downloader.get_video_info("https://www.youtube.com/watch?v=...")
-success = downloader.download(url, save_path)
-```
+### 3. 通用服务组件
 
-### 代理使用示例
-```python
-from services.proxy import get_current_proxy
+#### 3.1 配置系统 (DownloaderConfig)
+- 文件名模板和变量支持
+- JSON 格式配置保存/加载
+- 完整的类型注解和文档
+- 特点：灵活的配置管理，支持多平台
 
-proxy_url = get_current_proxy()
-if proxy_url:
-    # 使用代理进行请求
-    proxies = {
-        'http': proxy_url,
-        'https': proxy_url
-    }
-```
+#### 3.2 速度限制器 (SpeedLimiter)
+- 基于令牌桶算法
+- 支持同步和异步操作
+- 实时速度统计
+- 特点：精确的流量控制，平滑的下载体验
 
-## 注意事项
-1. 所有网络请求都应该使用代理管理器
-2. 视频下载需要支持断点续传
-3. 错误处理需要详细的日志记录
-4. GUI操作需要在主线程中进行 
+#### 3.3 下载调度器 (DownloadScheduler)
+- 优先级队列支持(高优先级/普通/后台)
+- 并发控制
+- 任务状态管理
+- 统计功能
+
+### 4. 已解决的问题
+
+#### 4.1 Twitter下载问题
+1. Selenium方法
+   - 问题：找不到Chrome浏览器安装路径
+   - 解决：改用Playwright，自动管理浏览器环境
+
+2. yt-dlp方法
+   - 问题：无法从推文中提取视频URL
+   - 解决：使用Playwright直接模拟浏览器访问
+
+3. Twitter API访问
+   - 问题：API访问权限不足（403错误）
+   - 解决：实现自定义的API签名和认证
+
+#### 4.2 性能问题
+1. 内存占用
+   - 问题：大文件下载内存占用过高
+   - 解决：实现流式下载，控制缓冲区大小
+
+2. 并发控制
+   - 问题：过多并发导致请求失败
+   - 解决：实现下载调度器，控制并发数量
+
+3. 代理稳定性
+   - 问题：代理连接不稳定
+   - 解决：实现自动重试和故障转移
+
+## 开发注意事项
+
+### 1. 代码规范
+- 遵循PEP8规范
+- 使用类型注解
+- 编写详细的文档字符串
+- 保持代码整洁和可维护性
+
+### 2. 错误处理
+- 使用专门的异常类
+- 记录详细的错误信息
+- 实现优雅的错误恢复
+- 提供用户友好的错误提示
+
+### 3. 性能优化
+- 使用异步IO
+- 实现智能的并发控制
+- 优化内存使用
+- 添加性能监控
+
+### 4. 安全性
+- 安全处理用户凭据
+- 实现请求签名
+- 防止敏感信息泄露
+- 注意代理安全性
+
+## TODO列表
+
+### 1. 功能增强
+- [ ] 添加更多下载源支持
+- [ ] 改进下载队列管理
+- [ ] 添加下载速度限制
+- [ ] 实现断点续传
+
+### 2. 用户体验
+- [ ] 优化进度显示
+- [ ] 添加更多配置选项
+- [ ] 改进错误提示
+- [ ] 添加操作指南
+
+### 3. 性能优化
+- [ ] 优化内存使用
+- [ ] 改进并发控制
+- [ ] 添加缓存机制
+- [ ] 优化代理选择 
