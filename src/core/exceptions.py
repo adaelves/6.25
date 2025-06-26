@@ -28,10 +28,7 @@ class RateLimitError(BiliBiliError):
     pass
 
 class DownloadCanceled(Exception):
-    """下载取消。
-    
-    当用户取消下载时抛出。
-    """
+    """下载已取消。"""
     pass
 
 class DanmakuError(BiliBiliError):
@@ -39,8 +36,5 @@ class DanmakuError(BiliBiliError):
     pass
 
 class DownloadError(Exception):
-    """下载错误。
-    
-    当下载过程中发生错误时抛出。
-    """
+    """下载错误。"""
     pass 

@@ -17,9 +17,7 @@ from functools import wraps
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 from fake_useragent import UserAgent
-from seleniumwire import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
+import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -60,7 +58,7 @@ def retry(max_attempts: int = 3, delay: float = 1.0):
 class CloudflareBypass:
     """Cloudflare 绕过工具。
     
-    使用 selenium-wire 获取有效的 cookies。
+    使用 undetected-chromedriver 获取有效的 cookies。
     支持自动保存和加载 cookies。
     
     Attributes:
@@ -99,124 +97,67 @@ class CloudflareBypass:
         self.cookies_file = cookies_file or Path.home() / ".twitter_cookies"
         self.user_agent = user_agent or UserAgent().random
         self.cookies_ttl = cookies_ttl
+        self.headers = {"User-Agent": self.user_agent}
+        self.cookies = {}
         
-    def _setup_driver(self) -> webdriver.Chrome:
-        """配置 Chrome WebDriver。
+    def bypass_5s_challenge(self, url: str) -> Dict[str, str]:
+        """绕过 Cloudflare 5 秒盾。
         
-        Returns:
-            webdriver.Chrome: 配置好的 WebDriver 实例
-        """
-        options = Options()
-        
-        # 基本配置
-        options.add_argument("--headless")  # 无头模式
-        options.add_argument("--disable-gpu")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-extensions")
-        
-        # 高级配置
-        options.add_argument(f"user-agent={self.user_agent}")
-        options.add_argument("--disable-blink-features=AutomationControlled")  # 隐藏自动化特征
-        options.add_argument("--disable-infobars")  # 禁用信息栏
-        options.add_argument("--disable-notifications")  # 禁用通知
-        options.add_argument("--ignore-certificate-errors")  # 忽略证书错误
-        options.add_argument("--disable-web-security")  # 禁用 Web 安全策略
-        
-        # 性能优化
-        options.add_argument("--disable-logging")
-        options.add_argument("--log-level=3")
-        options.add_argument("--disable-javascript")  # 禁用 JavaScript（可选）
-        options.add_argument("--disable-images")  # 禁用图片加载（可选）
-        
-        # 随机窗口大小（避免指纹识别）
-        window_sizes = [(1366, 768), (1920, 1080), (1440, 900), (1600, 900)]
-        width, height = random.choice(window_sizes)
-        options.add_argument(f"--window-size={width},{height}")
-        
-        # 配置代理
-        seleniumwire_options = {
-            "verify_ssl": False,  # 禁用 SSL 验证
-            "suppress_connection_errors": True  # 抑制连接错误
-        }
-        
-        if self.proxy:
-            seleniumwire_options["proxy"] = {
-                "http": self.proxy,
-                "https": self.proxy
-            }
-            
-        # 创建 WebDriver
-        driver = webdriver.Chrome(
-            options=options,
-            seleniumwire_options=seleniumwire_options
-        )
-        
-        # 配置请求拦截（可以修改请求头）
-        def interceptor(request):
-            # 添加自定义请求头
-            request.headers["User-Agent"] = self.user_agent
-            request.headers["Accept-Language"] = "en-US,en;q=0.9"
-            request.headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
-            
-        driver.request_interceptor = interceptor
-        driver.set_page_load_timeout(self.timeout)
-        
-        return driver
-        
-    def _wait_for_cloudflare(self, driver: webdriver.Chrome) -> None:
-        """等待 Cloudflare 检查完成。
+        使用 undetected-chromedriver 绕过 Cloudflare 5 秒盾检测。
         
         Args:
-            driver: WebDriver 实例
+            url: 目标URL
+            
+        Returns:
+            Dict[str, str]: 包含有效 cookies 的字典
             
         Raises:
-            TimeoutException: 等待超时
+            DownloadError: 绕过失败
         """
         try:
-            # 等待页面加载完成
-            WebDriverWait(driver, self.timeout).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
+            # 配置 Chrome 选项
+            options = uc.ChromeOptions()
+            options.add_argument("--headless=new")  # 无头模式
+            options.add_argument("--disable-gpu")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument(f"user-agent={self.user_agent}")
             
-            # 检查是否存在 Cloudflare 挑战
-            for pattern in self.CF_PATTERNS:
-                if pattern in driver.page_source:
-                    logger.info(f"检测到 Cloudflare 特征: {pattern}")
-                    # 等待挑战完成
-                    self._solve_challenge(driver)
-                    break
-                    
-        except TimeoutException as e:
-            logger.error("等待 Cloudflare 检查超时")
-            raise DownloadError("Cloudflare 检查超时") from e
+            # 配置代理
+            if self.proxy:
+                options.add_argument(f"--proxy-server={self.proxy}")
             
-    def _solve_challenge(self, driver: webdriver.Chrome) -> None:
-        """尝试解决 Cloudflare 挑战。
-        
-        Args:
-            driver: WebDriver 实例
-        """
-        # 等待挑战元素出现
-        try:
-            # 等待 "Checking your browser" 消失
-            WebDriverWait(driver, 10).until_not(
-                EC.presence_of_element_located((By.ID, "cf-spinner-please-wait"))
-            )
+            # 创建 undetected-chromedriver 实例
+            driver = uc.Chrome(options=options)
             
-            # 检查是否需要点击验证按钮
-            verify_button = driver.find_elements(By.ID, "challenge-stage")
-            if verify_button:
-                verify_button[0].click()
-                logger.info("点击了验证按钮")
+            try:
+                # 访问目标页面
+                logger.info(f"正在访问: {url}")
+                driver.get(url)
                 
-            # 给予足够时间完成验证
-            time.sleep(random.uniform(5, 8))
-            
+                # 等待视频元素出现（表示已通过 Cloudflare 检测）
+                WebDriverWait(driver, self.timeout).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "video"))
+                )
+                
+                # 获取 cookies
+                cookies = {}
+                for cookie in driver.get_cookies():
+                    cookies[cookie["name"]] = cookie["value"]
+                
+                # 保存 cookies
+                self._save_cookies(cookies)
+                
+                return cookies
+                
+            finally:
+                driver.quit()
+                
         except Exception as e:
-            logger.warning(f"解决挑战时出错: {e}")
-            
-    def _save_cookies(self, cookies: Dict) -> None:
+            logger.error(f"绕过 Cloudflare 5 秒盾失败: {e}")
+            raise DownloadError(f"绕过 Cloudflare 5 秒盾失败: {e}")
+    
+    def _save_cookies(self, cookies: Dict[str, str]) -> None:
         """保存 cookies 到文件。
         
         Args:
@@ -234,11 +175,11 @@ class CloudflareBypass:
         except Exception as e:
             logger.error(f"保存 cookies 失败: {e}")
             
-    def _load_cookies(self) -> Optional[Dict]:
+    def _load_cookies(self) -> Optional[Dict[str, str]]:
         """从文件加载 cookies。
         
         Returns:
-            Optional[Dict]: cookies 字典，如果文件不存在或已过期则返回 None
+            Optional[Dict[str, str]]: cookies 字典，如果文件不存在或已过期则返回 None
         """
         try:
             if self.cookies_file.exists():
@@ -263,7 +204,7 @@ class CloudflareBypass:
             logger.error(f"加载 cookies 失败: {e}")
         return None
         
-    def _verify_cookies(self, cookies: Dict) -> bool:
+    def _verify_cookies(self, cookies: Dict[str, str]) -> bool:
         """验证 cookies 是否有效。
         
         Args:
@@ -297,14 +238,16 @@ class CloudflareBypass:
             return False
             
     @retry(max_attempts=3, delay=2.0)
-    def bypass_cloudflare(self, url: str) -> Dict:
+    def bypass_cloudflare(self, url: str) -> Dict[str, str]:
         """绕过 Cloudflare 检测并获取 cookies。
+        
+        首先尝试加载已保存的 cookies，如果无效则使用 bypass_5s_challenge。
         
         Args:
             url: 目标URL
             
         Returns:
-            Dict: 包含有效 cookies 的字典
+            Dict[str, str]: 包含有效 cookies 的字典
             
         Raises:
             DownloadError: 绕过失败
@@ -314,43 +257,12 @@ class CloudflareBypass:
         if cookies:
             return cookies
             
-        try:
-            # 创建 WebDriver
-            driver = self._setup_driver()
-            
-            try:
-                # 访问目标页面
-                logger.info(f"正在访问: {url}")
-                driver.get(url)
-                
-                # 等待 Cloudflare 检查完成
-                self._wait_for_cloudflare(driver)
-                
-                # 获取 cookies
-                cookies = {}
-                for cookie in driver.get_cookies():
-                    cookies[cookie["name"]] = cookie["value"]
-                    
-                # 验证新获取的 cookies
-                if not self._verify_cookies(cookies):
-                    raise DownloadError("获取的 cookies 无效")
-                    
-                # 保存 cookies
-                self._save_cookies(cookies)
-                
-                return cookies
-                
-            finally:
-                # 确保关闭浏览器
-                driver.quit()
-                
-        except Exception as e:
-            logger.error(f"绕过 Cloudflare 失败: {e}")
-            raise DownloadError(f"绕过 Cloudflare 失败: {e}")
-            
+        # 使用 5 秒盾绕过
+        return self.bypass_5s_challenge(url)
+
 def bypass_cloudflare(url: str, 
                      proxy: Optional[str] = None,
-                     timeout: float = 30.0) -> Dict:
+                     timeout: float = 30.0) -> Dict[str, str]:
     """便捷函数：绕过 Cloudflare 检测。
     
     Args:
@@ -359,7 +271,7 @@ def bypass_cloudflare(url: str,
         timeout: 超时时间（秒）
         
     Returns:
-        Dict: 包含有效 cookies 的字典
+        Dict[str, str]: 包含有效 cookies 的字典
         
     Raises:
         DownloadError: 绕过失败

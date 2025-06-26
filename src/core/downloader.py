@@ -19,14 +19,13 @@ from .exceptions import DownloadCanceled
 logger = logging.getLogger(__name__)
 
 class BaseDownloader(ABC):
-    """下载器基类。
+    """基础下载器类。
     
-    定义下载器的基本接口，提供通用的下载功能。
+    所有下载器的基类，定义了基本的下载接口。
     
     Attributes:
-        save_dir: 保存目录
-        progress_callback: 进度回调函数
-        is_canceled: 是否已取消下载
+        save_dir: str, 保存目录
+        progress_callback: Optional[Callable], 进度回调函数
     """
     
     def __init__(
@@ -71,12 +70,12 @@ class BaseDownloader(ABC):
             self.progress_callback(progress, status)
             
     @abstractmethod
-    def download(self, url: str, **kwargs) -> bool:
-        """执行下载。
+    async def download(self, url: str, save_path: Optional[Path] = None) -> bool:
+        """下载资源。
         
         Args:
-            url: 下载URL
-            **kwargs: 其他参数
+            url: 资源URL
+            save_path: 可选的保存路径
             
         Returns:
             bool: 是否下载成功

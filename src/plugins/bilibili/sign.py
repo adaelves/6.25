@@ -1,127 +1,189 @@
-"""B站API签名模块。
+"""B站 API 签名模块。
 
-该模块实现B站API请求所需的签名生成功能。
-参考：https://github.com/SocialSisterYi/bilibili-API-collect
+提供 WBI 签名生成功能。
+支持自动获取和更新密钥。
 """
 
 import time
 import json
 import logging
-import zlib
-from typing import Dict, Any, Optional
-from urllib.parse import urlencode
+import hashlib
+from typing import Dict, Tuple, Optional
+from pathlib import Path
+import requests
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-def calculate_w_rid(params: Dict[str, Any], wts: int) -> str:
-    """计算w_rid签名。
+class BiliWbiSign:
+    """B站 WBI 签名生成器。
     
-    Args:
-        params: 请求参数字典
-        wts: 时间戳
-        
-    Returns:
-        str: w_rid签名值
+    支持自动获取和缓存 WBI 密钥。
+    支持定时更新密钥。
+    
+    Attributes:
+        _img_key: str, 图片密钥
+        _sub_key: str, 子密钥
+        _key_update_time: float, 密钥更新时间戳
+        _key_ttl: int, 密钥有效期（秒）
+        _cache_file: Path, 密钥缓存文件路径
     """
-    # 将参数按键排序
-    sorted_params = dict(sorted(params.items()))
     
-    # 构造签名字符串
-    param_str = urlencode(sorted_params)
-    sign_str = f"{param_str}&wts={wts}"
-    
-    # 计算CRC32
-    w_rid = format(zlib.crc32(sign_str.encode()) & 0xFFFFFFFF, '08x')
-    return w_rid
-
-def generate_sign(params: Dict[str, Any], sessdata: Optional[str] = None) -> Dict[str, Any]:
-    """生成带签名的请求参数。
-    
-    Args:
-        params: 原始请求参数
-        sessdata: 可选的SESSDATA值，用于认证
+    def __init__(
+        self,
+        key_ttl: int = 3600,
+        cache_file: Optional[Path] = None,
+        proxy: Optional[str] = None
+    ):
+        """初始化签名生成器。
         
-    Returns:
-        Dict[str, Any]: 包含签名的完整参数
+        Args:
+            key_ttl: 密钥有效期（秒）
+            cache_file: 密钥缓存文件路径
+            proxy: 代理服务器
+        """
+        self._img_key = ""
+        self._sub_key = ""
+        self._key_update_time = 0
+        self._key_ttl = key_ttl
+        self._cache_file = cache_file or Path.home() / ".bilibili_wbi_keys"
+        self._proxy = proxy
         
-    Raises:
-        ValueError: 参数类型无效或包含无效值
+        # 尝试加载缓存的密钥
+        self._load_cached_keys()
         
-    Example:
-        >>> params = {'aid': '12345', 'cid': '67890'}
-        >>> signed_params = generate_sign(params, sessdata='your_sessdata')
-        >>> print(signed_params)
-        {
-            'aid': '12345',
-            'cid': '67890',
-            'wts': '1624240000',
-            'w_rid': 'abcd1234'
-        }
-    """
-    try:
-        # 验证参数类型
-        if not isinstance(params, dict):
-            raise ValueError(f"参数必须是字典类型，而不是 {type(params)}")
+    def fetch_wbi_keys(self) -> Tuple[str, str]:
+        """获取 WBI 密钥。
+        
+        从 B 站 API 获取最新的 WBI 密钥。
+        
+        Returns:
+            Tuple[str, str]: (img_key, sub_key)
             
-        # 验证参数值
-        for key, value in params.items():
-            if not isinstance(key, str):
-                raise ValueError(f"参数键必须是字符串类型: {key}")
-            if not isinstance(value, (str, int, float, bool)):
-                raise ValueError(f"参数值必须是基本类型: {key}={value}")
+        Raises:
+            requests.RequestException: 请求失败
+            ValueError: 响应格式错误
+        """
+        try:
+            # 准备代理
+            proxies = {"http": self._proxy, "https": self._proxy} if self._proxy else None
+            
+            # 发送请求
+            resp = requests.get(
+                "https://api.bilibili.com/x/web-interface/nav",
+                proxies=proxies,
+                timeout=10
+            )
+            resp.raise_for_status()
+            
+            # 解析响应
+            data = resp.json()
+            if data["code"] != 0:
+                raise ValueError(f"API错误: {data['message']}")
                 
-        # 复制原始参数
-        signed_params = params.copy()
-        
-        # 添加时间戳
-        wts = int(time.time())
-        signed_params['wts'] = str(wts)
-        
-        # 如果提供了SESSDATA，添加到参数中
-        if sessdata:
-            signed_params['sessdata'] = sessdata
+            img_key = data["data"]["wbi_img"]["img_url"].split("/")[-1].split(".")[0]
+            sub_key = data["data"]["wbi_img"]["sub_url"].split("/")[-1].split(".")[0]
             
-        # 计算w_rid
-        w_rid = calculate_w_rid(signed_params, wts)
-        signed_params['w_rid'] = w_rid
-        
-        # 移除sessdata（不需要发送）
-        if 'sessdata' in signed_params:
-            del signed_params['sessdata']
+            logger.info("成功获取 WBI 密钥")
+            return img_key, sub_key
             
-        logger.debug(f"生成签名参数: {json.dumps(signed_params, ensure_ascii=False)}")
-        return signed_params
+        except Exception as e:
+            logger.error(f"获取 WBI 密钥失败: {e}")
+            raise
+            
+    def _load_cached_keys(self) -> None:
+        """加载缓存的密钥。"""
+        try:
+            if self._cache_file.exists():
+                with open(self._cache_file) as f:
+                    data = json.load(f)
+                    
+                # 检查密钥是否过期
+                if time.time() - data["timestamp"] < self._key_ttl:
+                    self._img_key = data["img_key"]
+                    self._sub_key = data["sub_key"]
+                    self._key_update_time = data["timestamp"]
+                    logger.info("已加载缓存的 WBI 密钥")
+                    return
+                    
+        except Exception as e:
+            logger.warning(f"加载缓存的密钥失败: {e}")
+            
+    def _save_keys(self) -> None:
+        """保存密钥到缓存文件。"""
+        try:
+            data = {
+                "img_key": self._img_key,
+                "sub_key": self._sub_key,
+                "timestamp": self._key_update_time
+            }
+            with open(self._cache_file, "w") as f:
+                json.dump(data, f)
+            logger.info(f"已保存 WBI 密钥到: {self._cache_file}")
+        except Exception as e:
+            logger.warning(f"保存密钥失败: {e}")
+            
+    def _update_keys_if_needed(self) -> None:
+        """如果需要则更新密钥。"""
+        now = time.time()
+        if not self._img_key or now - self._key_update_time >= self._key_ttl:
+            self._img_key, self._sub_key = self.fetch_wbi_keys()
+            self._key_update_time = now
+            self._save_keys()
+            
+    def sign(self, params: Dict[str, str]) -> Dict[str, str]:
+        """生成带签名的参数。
         
-    except Exception as e:
-        logger.error(f"生成签名失败: {e}")
-        raise
+        Args:
+            params: 原始参数字典
+            
+        Returns:
+            Dict[str, str]: 带签名的参数字典
+            
+        Raises:
+            ValueError: 参数错误
+        """
+        try:
+            # 更新密钥
+            self._update_keys_if_needed()
+            
+            # 准备签名参数
+            wts = str(int(time.time()))
+            params["wts"] = wts
+            
+            # 混合密钥
+            mixed_key = self._img_key + self._sub_key
+            
+            # 按键名排序
+            sorted_params = sorted(params.items())
+            
+            # 构造签名字符串
+            query = "&".join(f"{k}={v}" for k, v in sorted_params)
+            
+            # 计算签名
+            sign = hashlib.md5(
+                (query + mixed_key).encode()
+            ).hexdigest()
+            
+            # 添加签名
+            params["w_rid"] = sign
+            
+            return params
+            
+        except Exception as e:
+            logger.error(f"生成签名失败: {e}")
+            raise ValueError(f"生成签名失败: {e}")
 
-def verify_sign(params: Dict[str, Any]) -> bool:
-    """验证签名是否有效。
+# 创建全局实例
+bili_sign = BiliWbiSign()
+
+def sign_params(params: Dict[str, str]) -> Dict[str, str]:
+    """便捷函数：生成带签名的参数。
     
     Args:
-        params: 包含签名的参数字典
+        params: 原始参数字典
         
     Returns:
-        bool: 签名是否有效
+        Dict[str, str]: 带签名的参数字典
     """
-    try:
-        # 提取签名相关参数
-        w_rid = params.get('w_rid')
-        wts = params.get('wts')
-        if not w_rid or not wts:
-            return False
-            
-        # 复制参数并移除签名
-        verify_params = params.copy()
-        del verify_params['w_rid']
-        
-        # 重新计算签名
-        calculated_w_rid = calculate_w_rid(verify_params, int(wts))
-        
-        # 比较签名
-        return w_rid == calculated_w_rid
-        
-    except Exception as e:
-        logger.error(f"验证签名失败: {e}")
-        return False 
+    return bili_sign.sign(params) 
