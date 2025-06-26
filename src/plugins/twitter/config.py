@@ -20,26 +20,25 @@ class TwitterDownloaderConfig:
         max_concurrent_downloads: 最大并发下载数
         speed_limit: 速度限制(bytes/s)
         custom_headers: 自定义请求头
+        retry_interval: 重试间隔（秒）
     """
     
-    save_dir: Path
+    save_dir: Path = Path("downloads")
     proxy: Optional[str] = None
     timeout: int = 30
     max_retries: int = 3
-    chunk_size: int = 1024 * 1024  # 1MB
+    chunk_size: int = 8192
     max_concurrent_downloads: int = 3
     speed_limit: Optional[int] = None
-    custom_headers: Dict[str, str] = None
+    custom_headers: Dict[str, str] = field(default_factory=lambda: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    })
+    retry_interval: float = 2.0
     
     def __post_init__(self):
         """初始化后处理。"""
         if isinstance(self.save_dir, str):
             self.save_dir = Path(self.save_dir)
-            
-        if self.custom_headers is None:
-            self.custom_headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            }
             
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典。"""

@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: twitter-video-extractor
+Version: 0.1.0
+Requires-Python: >=3.10
+Requires-Dist: playwright>=1.53.0
+Requires-Dist: pytest>=7.0.0
+Requires-Dist: pytest-playwright>=0.7.0
+Requires-Dist: aiohttp>=3.8.0
+Requires-Dist: beautifulsoup4>=4.9.0
+Dynamic: requires-dist
+Dynamic: requires-python

@@ -1,6 +1,6 @@
-"""核心模块包。
+"""核心包。
 
-提供下载器的核心功能。
+提供基础功能和通用组件。
 """
 
 from .exceptions import DownloadError, DownloadCanceled

@@ -15,6 +15,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
+from playwright.sync_api import Page
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,22 @@ class TwitterExtractor:
         driver: webdriver.Chrome, Chrome WebDriver 实例
         wait_timeout: int, 等待超时时间（秒）
     """
+    
+    # 视频元素选择器列表
+    VIDEO_SELECTORS = [
+        "video",  # 标准video标签
+        "div[data-testid='videoPlayer'] video",  # Twitter视频播放器
+        "div[data-testid='videoComponent'] video",  # Twitter视频组件
+        "div[data-testid='media'] video",  # 媒体容器中的视频
+        "article video",  # 文章中的视频
+    ]
+    
+    # 图片元素选择器列表
+    IMAGE_SELECTORS = [
+        "img[src*='media']",  # 媒体图片
+        "div[data-testid='media'] img",  # 媒体容器中的图片
+        "article img[src*='media']",  # 文章中的媒体图片
+    ]
     
     def __init__(
         self,
@@ -264,4 +281,50 @@ class TwitterExtractor:
         
     def __exit__(self, exc_type, exc_val, exc_tb):
         """上下文管理器出口。"""
-        self.close() 
+        self.close()
+
+    def extract_media(self, page: Page) -> List[str]:
+        """提取页面中的媒体URL。
+        
+        Args:
+            page: Playwright页面对象
+            
+        Returns:
+            List[str]: 媒体URL列表
+        """
+        urls = []
+        
+        # 提取视频URL
+        for selector in self.VIDEO_SELECTORS:
+            elements = page.query_selector_all(selector)
+            for element in elements:
+                # 获取video标签的src属性
+                src = element.get_attribute("src")
+                if src:
+                    urls.append(src)
+                    logger.info(f"找到视频URL(从src): {src}")
+                    
+                # 获取source标签的src属性
+                sources = element.query_selector_all("source")
+                for source in sources:
+                    src = source.get_attribute("src")
+                    if src:
+                        urls.append(src)
+                        logger.info(f"找到视频URL(从source): {src}")
+                        
+        # 如果没有找到视频，尝试提取图片URL
+        if not urls:
+            for selector in self.IMAGE_SELECTORS:
+                elements = page.query_selector_all(selector)
+                for element in elements:
+                    src = element.get_attribute("src")
+                    if src and "media" in src:
+                        # 获取最高质量的图片URL
+                        best_url = src
+                        if "format=jpg&name=large" in src:
+                            best_url = src
+                            
+                        urls.append(best_url)
+                        logger.info(f"找到图片URL: {best_url}")
+                        
+        return urls 

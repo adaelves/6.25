@@ -302,4 +302,28 @@ def create_platform_error(
         return error_class(msg, code=code, **kwargs)
     
     # 处理通用错误类
-    return error_class(platform, msg, code=code, **kwargs) 
+    return error_class(platform, msg, code=code, **kwargs)
+
+class BiliBiliError(Exception):
+    """哔哩哔哩相关错误的基类。"""
+    pass
+
+class NetworkError(BiliBiliError):
+    """网络错误。"""
+    pass
+
+class APIError(BiliBiliError):
+    """API错误。"""
+    pass
+
+class ExtractError(BiliBiliError):
+    """提取错误。"""
+    pass
+
+class DownloadError(BiliBiliError):
+    """下载错误。"""
+    pass
+
+class AuthError(BiliBiliError):
+    """认证错误。"""
+    pass 
