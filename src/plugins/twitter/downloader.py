@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 from dataclasses import asdict
 from collections import deque
 
-from playwright.async_api import async_playwright, Page
+from playwright.async_api import async_playwright, Page, Browser, BrowserContext
 from bs4 import BeautifulSoup
 
 from src.core.downloader import BaseDownloader
@@ -69,6 +69,67 @@ class TwitterDownloader(BaseDownloader):
         self.speed_limiter = SpeedLimiter(config.speed_limit) if config.speed_limit else None
         self._canceled = False
         
+        # 浏览器相关属性
+        self._browser: Optional[Browser] = None
+        self._context: Optional[BrowserContext] = None
+        self._browser_lock = asyncio.Lock()
+        
+    async def _init_browser(self) -> None:
+        """初始化浏览器实例。"""
+        if not self._browser:
+            async with self._browser_lock:
+                if not self._browser:  # 双重检查锁定
+                    logger.info("初始化浏览器...")
+                    playwright = await async_playwright().start()
+                    self._browser = await playwright.chromium.launch(
+                        headless=True,
+                        proxy={"server": self.config.proxy} if self.config.proxy else None
+                    )
+                    self._context = await self._browser.new_context(
+                        user_agent=self.config.custom_headers.get("User-Agent"),
+                        viewport={"width": 1920, "height": 1080}
+                    )
+                    logger.info("浏览器初始化完成")
+                    
+    async def _get_page(self) -> Page:
+        """获取新的页面实例。
+        
+        Returns:
+            Page: Playwright页面对象
+        """
+        await self._init_browser()
+        if not self._context:
+            raise RuntimeError("浏览器上下文未初始化")
+        return await self._context.new_page()
+        
+    async def close(self) -> None:
+        """关闭下载器，释放资源。"""
+        if self._browser:
+            try:
+                if self._context:
+                    await self._context.close()
+                await self._browser.close()
+                logger.info("浏览器已关闭")
+            except Exception as e:
+                logger.error(f"关闭浏览器时出错: {e}")
+            finally:
+                self._browser = None
+                self._context = None
+                
+    async def __aenter__(self):
+        """异步上下文管理器入口。"""
+        return self
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """异步上下文管理器出口。"""
+        await self.close()
+        
+    def __del__(self):
+        """析构函数。"""
+        if self._browser:
+            logger.warning("下载器在析构时仍有活动的浏览器实例")
+            asyncio.create_task(self.close())
+            
     async def _wait_for_network_idle(self, page: Page, timeout: int = 30000):
         """等待网络请求完成。
         
@@ -144,22 +205,10 @@ class TwitterDownloader(BaseDownloader):
             raise ValueError("无效的Twitter URL")
             
         try:
-            async with async_playwright() as p:
-                # 启动浏览器
-                browser = await p.chromium.launch(
-                    headless=True,  # 无头模式
-                    proxy={
-                        "server": self.config.proxy
-                    } if self.config.proxy else None
-                )
-                
-                # 创建新页面
-                context = await browser.new_context(
-                    user_agent=self.config.custom_headers.get("User-Agent"),
-                    viewport={"width": 1920, "height": 1080}
-                )
-                page = await context.new_page()
-                
+            # 获取页面实例
+            page = await self._get_page()
+            
+            try:
                 # 设置超时
                 page.set_default_timeout(60000)  # 增加到60秒
                 
@@ -233,9 +282,6 @@ class TwitterDownloader(BaseDownloader):
                                 max_bitrate = 1080
                                 logger.info("找到1080p视频")
                                 
-                        await browser.close()
-                        logger.info("浏览器已关闭")
-                        
                         return {
                             "url": best_url,
                             "title": tweet_text[:100] if tweet_text else "",  # 限制标题长度
@@ -256,7 +302,6 @@ class TwitterDownloader(BaseDownloader):
                             best_url = src
                             
                         logger.info(f"选择最佳图片URL: {best_url}")
-                        await browser.close()
                         return {
                             "url": best_url,
                             "title": "",  # 图片不需要标题
@@ -265,8 +310,10 @@ class TwitterDownloader(BaseDownloader):
                             "format_id": "large"
                         }
                         
-                await browser.close()
                 raise ValueError("未找到视频或图片元素")
+                
+            finally:
+                await page.close()
                 
         except Exception as e:
             logger.error(f"提取视频信息失败: {e}")
