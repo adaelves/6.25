@@ -87,3 +87,9 @@
 2025-06-26 11:20:14,452 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
 2025-06-26 11:20:14,452 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
 2025-06-26 11:20:14,454 - __main__ - INFO - __file__: E:\test\6.25\src\main.py
+2025-06-26 13:57:55,324 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-26 13:57:55,324 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
+2025-06-26 13:57:55,326 - __main__ - INFO - __file__: E:\test\6.25\src\main.py
+2025-06-26 15:03:25,127 - __main__ - INFO - 应用程序启动，工作目录：E:\test\6.25
+2025-06-26 15:03:25,128 - __main__ - INFO - Python 路径：['E:\\test\\6.25', 'C:\\Program Files\\Python310\\python310.zip', 'C:\\Program Files\\Python310\\DLLs', 'C:\\Program Files\\Python310\\lib', 'C:\\Program Files\\Python310', 'C:\\Users\\Wang\\AppData\\Roaming\\Python\\Python310\\site-packages', 'C:\\Program Files\\Python310\\lib\\site-packages', 'E:\\test\\6.25\\src']
+2025-06-26 15:03:25,128 - __main__ - INFO - __file__: E:\test\6.25\src\main.py

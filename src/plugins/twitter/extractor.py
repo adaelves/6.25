@@ -1,197 +1,267 @@
-"""Twitter信息提取模块。"""
+"""Twitter 媒体提取模块。
+
+负责从 Twitter 页面提取媒体信息，包括图片、视频和 GIF。
+"""
 
 import re
 import json
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, List, Optional
 from urllib.parse import urlparse
 import requests
-from datetime import datetime
+from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 
 logger = logging.getLogger(__name__)
 
 class TwitterExtractor:
-    """Twitter信息提取器。
+    """Twitter 媒体提取器。
     
-    用于从Twitter URL中提取媒体信息。
+    负责从 Twitter 页面提取媒体信息，包括：
+    - 图片
+    - 视频
+    - GIF
+    
+    支持提取视频时长信息。
     
     Attributes:
-        proxy: Optional[str], 代理服务器
-        timeout: float, 超时时间
+        driver: webdriver.Chrome, Chrome WebDriver 实例
+        wait_timeout: int, 等待超时时间（秒）
     """
     
-    # API 端点
-    API_BASE = "https://twitter.com/i/api/graphql"
-    TWEET_DETAIL_QUERY = "k5XapwcY5qKVX7gYFdkFMA"  # TweetDetail query hash
-    
-    def __init__(self, proxy: Optional[str] = None, timeout: float = 30.0):
+    def __init__(
+        self,
+        driver: Optional[webdriver.Chrome] = None,
+        wait_timeout: int = 30
+    ):
         """初始化提取器。
         
         Args:
-            proxy: 代理服务器
-            timeout: 超时时间
+            driver: Chrome WebDriver 实例，如果不提供则创建新实例
+            wait_timeout: 等待超时时间（秒）
         """
-        self.proxy = proxy
-        self.timeout = timeout
-        self.session = requests.Session()
+        self.driver = driver or self._create_driver()
+        self.wait_timeout = wait_timeout
         
-        # 设置默认请求头
-        self.session.headers.update({
-            "Authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Referer": "https://twitter.com/",
-            "Origin": "https://twitter.com",
-            "x-twitter-active-user": "yes",
-            "x-twitter-auth-type": "OAuth2",
-            "x-twitter-client-language": "en",
-            "x-csrf-token": "a8e0c6d5f7b3e2d1",  # 随机生成的CSRF令牌
-            "Cookie": "ct0=a8e0c6d5f7b3e2d1"  # 与CSRF令牌匹配
-        })
+    def _create_driver(self) -> webdriver.Chrome:
+        """创建 Chrome WebDriver 实例。
         
-        # 设置代理
-        if proxy:
-            self.session.proxies = {
-                "http": proxy,
-                "https": proxy
-            }
+        Returns:
+            webdriver.Chrome: WebDriver 实例
+        """
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless")  # 无界面模式
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        return webdriver.Chrome(options=options)
         
     def extract_info(self, url: str) -> Dict[str, Any]:
-        """提取推文信息。
+        """提取推文中的媒体信息。
         
         Args:
             url: 推文URL
             
         Returns:
-            Dict[str, Any]: 包含以下信息的字典：
-                - id: str, 推文ID
-                - author: str, 作者用户名
-                - created_at: str, 创建时间
-                - text: str, 推文内容
-                - likes: int, 点赞数
-                - reposts: int, 转发数
-                - media_urls: List[str], 媒体URL列表
-                
+            Dict[str, Any]: 媒体信息，格式如下：
+            {
+                "media": [
+                    {
+                        "url": "https://...",
+                        "type": "video",  # video/image/gif
+                        "duration": 120    # 仅视频有效，单位秒
+                    }
+                ]
+            }
+            
         Raises:
-            ValueError: URL无效
-            requests.RequestException: 请求失败
+            ValueError: URL 无效
+            requests.RequestException: 网络请求失败
         """
-        # 提取推文ID
-        match = re.match(r"https://twitter\.com/(\w+)/status/(\d+)", url)
-        if not match:
-            raise ValueError("无效的Twitter URL")
-            
-        username, tweet_id = match.groups()
-        logger.info(f"提取推文信息: {username}/{tweet_id}")
-        
         try:
-            # 构造GraphQL查询
-            variables = {
-                "focalTweetId": tweet_id,
-                "with_rux_injections": False,
-                "includePromotedContent": False,
-                "withCommunity": False,
-                "withQuickPromoteEligibilityTweetFields": False,
-                "withBirdwatchNotes": False,
-                "withVoice": True,
-                "withV2Timeline": True
-            }
+            # 验证 URL
+            if not self._is_valid_tweet_url(url):
+                raise ValueError(f"无效的推文 URL: {url}")
+                
+            # 加载页面
+            self.driver.get(url)
             
-            # 发送请求
-            response = self.session.get(
-                f"{self.API_BASE}/{self.TWEET_DETAIL_QUERY}/TweetDetail",
-                params={
-                    "variables": json.dumps(variables),
-                    "features": json.dumps({
-                        "responsive_web_graphql_exclude_directive_enabled": True,
-                        "verified_phone_label_enabled": False,
-                        "creator_subscriptions_tweet_preview_api_enabled": True,
-                        "responsive_web_graphql_timeline_navigation_enabled": True,
-                        "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
-                        "tweetypie_unmention_optimization_enabled": True,
-                        "vibe_api_enabled": True,
-                        "responsive_web_edit_tweet_api_enabled": True,
-                        "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
-                        "view_counts_everywhere_api_enabled": True,
-                        "longform_notetweets_consumption_enabled": True,
-                        "tweet_awards_web_tipping_enabled": False,
-                        "freedom_of_speech_not_reach_fetch_enabled": True,
-                        "standardized_nudges_misinfo": True,
-                        "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": False,
-                        "interactive_text_enabled": True,
-                        "responsive_web_text_conversations_enabled": False,
-                        "longform_notetweets_rich_text_read_enabled": True,
-                        "responsive_web_enhance_cards_enabled": False
-                    })
-                },
-                timeout=self.timeout,
-                verify=False  # 禁用SSL验证以便调试
-            )
-            response.raise_for_status()
+            # 等待媒体元素加载
+            self._wait_for_media()
             
-            # 解析响应
-            data = response.json()
-            logger.debug(f"API响应: {json.dumps(data, indent=2)}")
+            # 提取媒体信息
+            media_elements = self._find_media_elements()
+            media_info = []
             
-            # 提取推文数据
-            tweet_result = data["data"]["threaded_conversation_with_injections"]["instructions"][0]["entries"][0]["content"]["itemContent"]["tweet_results"]["result"]
-            tweet = tweet_result["legacy"]
-            user = tweet_result["core"]["user_results"]["result"]["legacy"]
+            for element in media_elements:
+                info = self._extract_media_info(element)
+                if info:
+                    media_info.append(info)
+                    
+            return {"media": media_info}
             
-            # 提取媒体URL
-            media_urls = []
-            if "extended_entities" in tweet and "media" in tweet["extended_entities"]:
-                for media in tweet["extended_entities"]["media"]:
-                    if media["type"] == "photo":
-                        media_urls.append(media["media_url_https"])
-                    elif media["type"] == "video":
-                        variants = media["video_info"]["variants"]
-                        video_variants = [v for v in variants if v["content_type"] == "video/mp4"]
-                        if video_variants:
-                            best_variant = max(
-                                video_variants,
-                                key=lambda x: x.get("bitrate", 0)
-                            )
-                            media_urls.append(best_variant["url"])
-            
-            # 构造返回数据
-            return {
-                "id": tweet_id,
-                "author": user["screen_name"],
-                "created_at": tweet["created_at"],
-                "text": tweet["full_text"],
-                "likes": tweet["favorite_count"],
-                "reposts": tweet["retweet_count"],
-                "media_urls": media_urls
-            }
-            
-        except requests.RequestException as e:
-            logger.error(f"获取推文信息失败: {e}")
+        except Exception as e:
+            logger.error(f"提取媒体信息失败: {e}")
             raise
             
-        except (KeyError, ValueError) as e:
-            logger.error(f"解析推文信息失败: {e}")
-            raise ValueError(f"解析推文信息失败: {e}")
-            
-    def get_video_info(self, url: str) -> Dict[str, Any]:
-        """获取视频信息。
+    def _is_valid_tweet_url(self, url: str) -> bool:
+        """验证推文 URL 是否有效。
         
         Args:
-            url: 视频URL
+            url: 推文 URL
             
         Returns:
-            Dict[str, Any]: 包含视频信息的字典
+            bool: URL 是否有效
         """
-        info = self.extract_info(url)
-        video_urls = [url for url in info["media_urls"] if url.endswith(".mp4")]
-        if not video_urls:
-            raise ValueError("未找到视频内容")
+        try:
+            parsed = urlparse(url)
+            return (
+                parsed.netloc in ("twitter.com", "x.com") and
+                bool(re.match(r"/\w+/status/\d+", parsed.path))
+            )
+        except Exception:
+            return False
             
+    def _wait_for_media(self) -> None:
+        """等待媒体元素加载完成。
+        
+        Raises:
+            TimeoutException: 等待超时
+        """
+        wait = WebDriverWait(self.driver, self.wait_timeout)
+        
+        # 等待图片加载
+        wait.until(
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, '[data-testid="tweetPhoto"]')
+            ),
+            message="等待图片加载超时"
+        )
+        
+        # 等待视频加载
+        wait.until(
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, '[data-testid="videoPlayer"]')
+            ),
+            message="等待视频加载超时"
+        )
+        
+    def _find_media_elements(self) -> List[Any]:
+        """查找所有媒体元素。
+        
+        Returns:
+            List[Any]: 媒体元素列表
+        """
+        return self.driver.find_elements(
+            By.CSS_SELECTOR,
+            '[data-testid="tweetPhoto"], [data-testid="videoPlayer"]'
+        )
+        
+    def _extract_media_info(self, element: Any) -> Optional[Dict[str, Any]]:
+        """从媒体元素提取信息。
+        
+        Args:
+            element: 媒体元素
+            
+        Returns:
+            Optional[Dict[str, Any]]: 媒体信息，格式如下：
+            {
+                "url": "https://...",
+                "type": "video",  # video/image/gif
+                "duration": 120    # 仅视频有效
+            }
+        """
+        try:
+            # 获取元素类型
+            test_id = element.get_attribute("data-testid")
+            
+            if test_id == "tweetPhoto":
+                # 提取图片信息
+                return self._extract_image_info(element)
+            elif test_id == "videoPlayer":
+                # 提取视频信息
+                return self._extract_video_info(element)
+                
+        except Exception as e:
+            logger.warning(f"提取媒体信息失败: {e}")
+            return None
+            
+    def _extract_image_info(self, element: Any) -> Dict[str, Any]:
+        """提取图片信息。
+        
+        Args:
+            element: 图片元素
+            
+        Returns:
+            Dict[str, Any]: 图片信息
+        """
+        # 获取图片 URL
+        img = element.find_element(By.TAG_NAME, "img")
+        url = img.get_attribute("src")
+        
+        # 判断是否为 GIF
+        is_gif = bool(element.find_elements(
+            By.CSS_SELECTOR,
+            '[data-testid="playButton"]'
+        ))
+        
         return {
-            "title": info["text"],
-            "author": info["author"],
-            "url": video_urls[0],
-            "created_at": info["created_at"]
-        } 
+            "url": url,
+            "type": "gif" if is_gif else "image"
+        }
+        
+    def _extract_video_info(self, element: Any) -> Dict[str, Any]:
+        """提取视频信息。
+        
+        Args:
+            element: 视频元素
+            
+        Returns:
+            Dict[str, Any]: 视频信息
+        """
+        # 获取视频 URL
+        video = element.find_element(By.TAG_NAME, "video")
+        url = video.get_attribute("src")
+        
+        # 获取视频时长
+        duration = self._get_video_duration(video)
+        
+        return {
+            "url": url,
+            "type": "video",
+            "duration": duration
+        }
+        
+    def _get_video_duration(self, video_element: Any) -> float:
+        """获取视频时长。
+        
+        Args:
+            video_element: 视频元素
+            
+        Returns:
+            float: 视频时长（秒）
+        """
+        # 执行 JS 获取时长
+        duration = self.driver.execute_script(
+            "return arguments[0].duration",
+            video_element
+        )
+        return float(duration)
+        
+    def close(self) -> None:
+        """关闭 WebDriver。"""
+        if self.driver:
+            self.driver.quit()
+            self.driver = None
+            
+    def __enter__(self):
+        """上下文管理器入口。"""
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """上下文管理器出口。"""
+        self.close() 
