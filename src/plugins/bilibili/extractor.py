@@ -11,7 +11,7 @@ from urllib.parse import urlparse, parse_qs
 import requests
 from bs4 import BeautifulSoup
 from src.services.proxy import get_current_proxy
-from .sign import generate_sign
+from .sign import BiliWbiSign
 from core.exceptions import (
     BiliBiliError,
     VIPContentError,
@@ -32,6 +32,7 @@ class BilibiliExtractor:
     Attributes:
         sessdata: str, B站登录凭证
         proxy: str, 代理服务器地址
+        signer: BiliWbiSign, WBI签名生成器
     """
     
     # API端点
@@ -71,6 +72,7 @@ class BilibiliExtractor:
         """
         self.sessdata = sessdata
         self.proxy = proxy
+        self.signer = BiliWbiSign()
         
         # 设置请求头
         self.headers = {
@@ -198,104 +200,44 @@ class BilibiliExtractor:
             bvid: BV号
             
         Returns:
-            Dict[str, Any]: 视频信息
-            
-        Raises:
-            BiliBiliError: API调用出错
-            ParsingError: CID为空
+            Dict[str, Any]: 视频基本信息
         """
+        # 准备参数
         params = {"bvid": bvid}
+        
+        # 添加WBI签名
+        params = self.signer.sign(params)
+        
+        # 发送请求
         data = self._make_api_request(self.API_VIDEO_INFO, params)
         
-        # 检查CID是否为空
-        if not data.get("cid"):
-            raise ParsingError("视频CID不能为空")
-            
-        # 截断过长标题
-        if len(data.get("title", "")) > 100:
-            data["title"] = data["title"][:97] + "..."
-            
-        # 检查磁盘空间
-        if "pages" in data:
-            total_size = sum(page.get("size", 0) for page in data["pages"])
-            if not self._check_disk_space(total_size):
-                raise RuntimeError(f"磁盘空间不足，需要 {total_size / 1024 / 1024:.1f}MB")
-                
-        return data
-        
-    def _check_disk_space(self, required_bytes: int) -> bool:
-        """检查磁盘空间是否足够。
-        
-        Args:
-            required_bytes: 需要的字节数
-            
-        Returns:
-            bool: 空间是否足够
-        """
-        import os
-        
-        try:
-            # 获取当前目录的磁盘信息
-            st = os.statvfs(".")
-            free_bytes = st.f_bavail * st.f_bsize
-            
-            # 预留10%的安全空间
-            safe_free_bytes = free_bytes * 0.9
-            
-            return safe_free_bytes >= required_bytes
-        except Exception as e:
-            logger.warning(f"检查磁盘空间失败: {e}")
-            return True  # 如果无法检查，默认允许下载
-            
-    def _extract_danmaku(self, cid: str) -> Optional[str]:
-        """提取弹幕内容。
-        
-        Args:
-            cid: 视频CID
-            
-        Returns:
-            Optional[str]: 弹幕XML内容，解析失败返回None
-            
-        Raises:
-            ParsingError: 弹幕XML格式无效
-        """
-        try:
-            url = f"https://comment.bilibili.com/{cid}.xml"
-            response = requests.get(url, headers=self.headers, proxies=self.proxies)
-            response.raise_for_status()
-            
-            # 验证XML格式
-            if not response.text.startswith("<?xml"):
-                raise ParsingError("弹幕XML格式无效")
-                
-            return response.text
-        except requests.RequestException as e:
-            logger.error(f"获取弹幕失败: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"解析弹幕失败: {e}")
-            raise ParsingError(f"弹幕XML格式无效: {e}")
+        return self._parse_response(data)
         
     def _get_play_info(self, bvid: str, cid: str) -> Dict[str, Any]:
         """获取视频播放信息。
         
         Args:
             bvid: BV号
-            cid: 视频CID
+            cid: 分P ID
             
         Returns:
             Dict[str, Any]: 播放信息
-            
-        Raises:
-            BiliBiliError: API调用出错
         """
+        # 准备参数
         params = {
             "bvid": bvid,
             "cid": cid,
-            "qn": 120,  # 请求最高画质
-            "fnval": 16  # 返回dash格式
+            "qn": 127,  # 请求最高画质
+            "fnval": 4048  # 启用所有编码格式
         }
-        return self._make_api_request(self.API_PLAYURL, params)
+        
+        # 添加WBI签名
+        params = self.signer.sign(params)
+        
+        # 发送请求
+        data = self._make_api_request(self.API_PLAYURL, params)
+        
+        return self._parse_response(data)
         
     def _get_bangumi_info(self, season_id: str) -> Dict[str, Any]:
         """获取番剧信息。
@@ -305,38 +247,17 @@ class BilibiliExtractor:
             
         Returns:
             Dict[str, Any]: 番剧信息
-            
-        Raises:
-            BiliBiliError: API调用出错
         """
+        # 准备参数
         params = {"season_id": season_id}
-        return self._make_api_request(self.API_BANGUMI_INFO, params)
         
-    def _extract_qualities(self, play_info: Dict[str, Any]) -> Dict[int, str]:
-        """提取支持的清晰度列表。
+        # 添加WBI签名
+        params = self.signer.sign(params)
         
-        Args:
-            play_info: 播放信息
-            
-        Returns:
-            Dict[int, str]: 清晰度代码到名称的映射字典
-            
-        Example:
-            >>> extractor._extract_qualities(play_info)
-            {
-                80: "1080p",
-                64: "720p",
-                32: "480p",
-                16: "360p"
-            }
-        """
-        qualities = {}
-        accept_quality = play_info.get("accept_quality", [])
+        # 发送请求
+        data = self._make_api_request(self.API_BANGUMI_INFO, params)
         
-        for code in accept_quality:
-            qualities[code] = self.QUALITY_MAP.get(code, f"未知({code})")
-            
-        return qualities
+        return self._parse_response(data)
         
     def _make_api_request(self, url: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """发送API请求。
@@ -346,29 +267,39 @@ class BilibiliExtractor:
             params: 请求参数
             
         Returns:
-            Dict[str, Any]: 响应数据
+            Dict[str, Any]: API响应数据
             
         Raises:
-            BiliBiliError: API调用出错
             NetworkError: 网络请求失败
+            BiliBiliError: API调用出错
         """
         try:
-            response = requests.get(
+            # 发送请求
+            resp = requests.get(
                 url,
                 params=params,
                 headers=self.headers,
                 proxies=self.proxies,
-                timeout=30
+                timeout=10
             )
-            response.raise_for_status()
+            resp.raise_for_status()
             
-            data = response.json()
-            return self._parse_response(data)
+            # 解析响应
+            data = resp.json()
             
-        except requests.Timeout:
-            raise NetworkError("请求超时，请检查网络连接")
+            # 检查错误码
+            if data["code"] != 0:
+                error_class, message = self.ERROR_CODE_MAP.get(
+                    data["code"],
+                    (BiliBiliError, data["message"])
+                )
+                raise error_class(f"API调用失败: {message}")
+                
+            return data["data"]
+            
         except requests.RequestException as e:
-            raise NetworkError(f"网络请求失败: {e}")
+            logger.error(f"请求失败: {e}")
+            raise NetworkError(f"请求失败: {e}")
             
     def _parse_response(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """解析API响应。
@@ -380,27 +311,16 @@ class BilibiliExtractor:
             Dict[str, Any]: 解析后的数据
             
         Raises:
-            BiliBiliError: 解析失败
+            ParsingError: 解析失败
         """
-        # 检查错误码
-        code = data.get("code", 0)
-        if code != 0:
-            error_class, message = self.ERROR_CODE_MAP.get(
-                code,
-                (BiliBiliError, f"未知错误: {data.get('message', '')}")
-            )
-            raise error_class(message)
-            
-        # 获取数据部分
-        data = data.get("data", {})
-        if not data:
-            raise ParsingError("返回数据为空")
-            
-        # 检查API版本并解析
-        if "video_data" in data:  # 旧版API
-            return self._parse_legacy_response(data)
-        else:  # 新版API
-            return self._parse_new_response(data)
+        try:
+            if "dash" in data:
+                return self._parse_new_response(data)
+            else:
+                return self._parse_legacy_response(data)
+        except Exception as e:
+            logger.error(f"解析响应失败: {e}")
+            raise ParsingError(f"解析响应失败: {e}")
             
     def _parse_legacy_response(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """解析旧版API响应。
@@ -411,23 +331,18 @@ class BilibiliExtractor:
         Returns:
             Dict[str, Any]: 解析后的数据
         """
-        video_data = data["video_data"]
         return {
-            "bvid": video_data.get("bvid", ""),
-            "aid": video_data.get("aid", 0),
-            "cid": video_data.get("cid", 0),
-            "title": video_data.get("title", ""),
-            "desc": video_data.get("desc", ""),
-            "duration": video_data.get("duration", 0),
-            "owner": {
-                "name": video_data.get("owner", {}).get("name", ""),
-                "mid": video_data.get("owner", {}).get("mid", 0)
-            },
-            "stat": video_data.get("stat", {}),
-            "pages": video_data.get("pages", []),
-            "subtitle": video_data.get("subtitle", {}),
-            "is_vip_only": bool(video_data.get("rights", {}).get("vip_only", 0)),
-            "is_area_limited": bool(video_data.get("rights", {}).get("area_limit", 0))
+            "title": data.get("title", ""),
+            "description": data.get("desc", ""),
+            "duration": data.get("duration", 0),
+            "owner": data.get("owner", {}).get("name", ""),
+            "bvid": data.get("bvid", ""),
+            "aid": data.get("aid", 0),
+            "cid": data.get("cid", 0),
+            "videos": data.get("videos", []),
+            "quality": data.get("quality", 0),
+            "format": "flv",
+            "urls": data.get("durl", [])
         }
         
     def _parse_new_response(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -440,43 +355,39 @@ class BilibiliExtractor:
             Dict[str, Any]: 解析后的数据
         """
         return {
+            "title": data.get("title", ""),
+            "description": data.get("desc", ""),
+            "duration": data.get("duration", 0),
+            "owner": data.get("owner", {}).get("name", ""),
             "bvid": data.get("bvid", ""),
             "aid": data.get("aid", 0),
             "cid": data.get("cid", 0),
-            "title": data.get("title", ""),
-            "desc": data.get("desc", ""),
-            "duration": data.get("duration", 0),
-            "owner": {
-                "name": data.get("owner", {}).get("name", ""),
-                "mid": data.get("owner", {}).get("mid", 0)
-            },
-            "stat": data.get("stat", {}),
-            "pages": data.get("pages", []),
-            "subtitle": data.get("subtitle", {}),
-            "is_vip_only": bool(data.get("rights", {}).get("vip_only", 0)),
-            "is_area_limited": bool(data.get("rights", {}).get("area_limit", 0))
+            "videos": data.get("videos", []),
+            "quality": data.get("quality", 0),
+            "format": "dash",
+            "dash": data.get("dash", {})
         }
         
-    def _parse_html(self, url: str) -> BeautifulSoup:
-        """获取并解析网页。
+    def _extract_qualities(self, play_info: Dict[str, Any]) -> Dict[int, str]:
+        """提取可用画质列表。
         
         Args:
-            url: 网页URL
+            play_info: 播放信息
             
         Returns:
-            BeautifulSoup: 解析后的页面
+            Dict[int, str]: 画质ID到描述的映射
         """
-        try:
-            response = requests.get(
-                url,
-                headers=self.headers,
-                proxies=self.proxies,
-                timeout=30
-            )
-            response.raise_for_status()
-            
-            return BeautifulSoup(response.text, 'lxml')
-            
-        except Exception as e:
-            logger.error(f"页面解析失败 {url}: {e}")
-            raise ParsingError(f"页面解析失败: {e}") 
+        qualities = {}
+        
+        # 从dash格式提取
+        if "dash" in play_info:
+            for video in play_info["dash"].get("video", []):
+                qn = video.get("id", 0)
+                qualities[qn] = self.QUALITY_MAP.get(qn, f"{qn}P")
+                
+        # 从flv格式提取
+        elif "accept_quality" in play_info:
+            for qn in play_info["accept_quality"]:
+                qualities[qn] = self.QUALITY_MAP.get(qn, f"{qn}P")
+                
+        return qualities 
