@@ -620,9 +620,7 @@ class TwitterDownloader(BaseDownloader):
             'Sec-Fetch-Mode': 'navigate',
             'Sec-Fetch-Site': 'none',
             'Sec-Fetch-User': '?1',
-            'DNT': '1',
-            'Referer': 'https://twitter.com/',
-            'X-Forwarded-For': f'127.0.0.{random.randint(1, 255)}'
+            'DNT': '1'
         }
         
         # 添加认证信息
@@ -637,75 +635,82 @@ class TwitterDownloader(BaseDownloader):
             })
         
         try:
-            # 先尝试使用x.com域名
+            # 统一使用twitter.com域名
+            tweet_url = tweet_url.replace('x.com', 'twitter.com')
+            
+            # 获取API响应
+            api_url = f"https://api.twitter.com/1.1/statuses/show/{tweet_url.split('/status/')[-1]}.json"
             response = requests.get(
-                tweet_url,
+                api_url,
                 headers=headers,
                 proxies={'http': self.config.proxy, 'https': self.config.proxy} if self.config.proxy else None,
                 timeout=30
             )
+            response.raise_for_status()
+            tweet_data = response.json()
             
-            # 如果失败，尝试使用twitter.com域名
-            if not response.ok:
-                tweet_url = tweet_url.replace('x.com', 'twitter.com')
+            images = []
+            
+            # 从API响应中提取图片
+            if 'extended_entities' in tweet_data and 'media' in tweet_data['extended_entities']:
+                for media in tweet_data['extended_entities']['media']:
+                    if media['type'] == 'photo':
+                        # 获取最高质量的图片
+                        img_url = media.get('media_url_https', '')
+                        if img_url:
+                            img_url = f"{img_url}?format=jpg&name=4096x4096"
+                            images.append(img_url)
+                            
+            # 如果API没有返回图片，尝试从HTML中提取
+            if not images:
                 response = requests.get(
                     tweet_url,
                     headers=headers,
                     proxies={'http': self.config.proxy, 'https': self.config.proxy} if self.config.proxy else None,
                     timeout=30
                 )
+                response.raise_for_status()
+                html = response.text
+                
+                # 使用更多的选择器来查找图片
+                selectors = [
+                    'meta[property="og:image"]',
+                    'meta[name="twitter:image"]',
+                    'img[src*="pbs.twimg.com/media"]',
+                    'div[data-testid="tweetPhoto"] img'
+                ]
+                
+                soup = BeautifulSoup(html, 'html.parser')
+                for selector in selectors:
+                    elements = soup.select(selector)
+                    for element in elements:
+                        img_url = element.get('content') or element.get('src')
+                        if img_url:
+                            # 清理URL并添加参数
+                            img_url = img_url.split('?')[0]
+                            img_url = f"{img_url}?format=jpg&name=4096x4096"
+                            if img_url not in images:
+                                images.append(img_url)
+                
+                # 查找JSON数据
+                json_data = re.search(r'<script[^>]*>({[^<]+})</script>', html)
+                if json_data:
+                    try:
+                        data = json.loads(json_data.group(1))
+                        if 'props' in data and 'pageProps' in data['props']:
+                            tweet = data['props']['pageProps'].get('tweet', {})
+                            if 'media' in tweet:
+                                for media in tweet['media']:
+                                    if media.get('type') == 'photo':
+                                        img_url = media.get('url', '')
+                                        if img_url:
+                                            img_url = f"{img_url}?format=jpg&name=4096x4096"
+                                            if img_url not in images:
+                                                images.append(img_url)
+                    except:
+                        pass
             
-            response.raise_for_status()
-            html = response.text
-            
-            logger.debug(f"HTML响应内容: {html[:1000]}")  # 记录前1000个字符用于调试
-            
-            images = set()
-            
-            # 1. 查找data-image-url属性
-            if 'data-image-url="' in html:
-                images.update(re.findall(r'data-image-url="([^"]+)"', html))
-            
-            # 2. 查找og:image元标签
-            og_images = re.findall(r'<meta property="og:image" content="([^"]+)"', html)
-            images.update(og_images)
-            
-            # 3. 查找所有可能的图片URL模式
-            patterns = [
-                r'https://pbs\.twimg\.com/media/[A-Za-z0-9_-]+\.(jpg|png|webp)',
-                r'https://pbs\.twimg\.com/tweet_video_thumb/[A-Za-z0-9_-]+\.(jpg|png|webp)',
-                r'https://pbs\.twimg\.com/ext_tw_video_thumb/[A-Za-z0-9_-]+/[^"\']+',
-                r'https://pbs\.twimg\.com/amplify_video_thumb/[A-Za-z0-9_-]+/[^"\']+',
-            ]
-            
-            for pattern in patterns:
-                matches = re.findall(pattern, html)
-                for match in matches:
-                    if isinstance(match, tuple):
-                        url = match[0]  # 获取URL部分
-                    else:
-                        url = match
-                    # 清理URL并添加参数
-                    url = url.split('?')[0]  # 移除现有参数
-                    url = f"{url}?format=jpg&name=4096x4096"
-                    images.add(url)
-            
-            # 4. 查找新的图片格式
-            new_patterns = [
-                r'"url":"(https://pbs\.twimg\.com/[^"]+)"',
-                r'"image_url":"(https://pbs\.twimg\.com/[^"]+)"',
-                r'"media_url_https":"(https://pbs\.twimg\.com/[^"]+)"'
-            ]
-            
-            for pattern in new_patterns:
-                matches = re.findall(pattern, html)
-                for url in matches:
-                    url = url.replace('\\', '')  # 移除JSON转义
-                    url = url.split('?')[0]  # 移除现有参数
-                    url = f"{url}?format=jpg&name=4096x4096"
-                    images.add(url)
-            
-            return list(images)
+            return list(set(images))  # 去重
             
         except Exception as e:
             logger.error(f"HTML解析提取图片失败: {e}")
@@ -720,8 +725,6 @@ class TwitterDownloader(BaseDownloader):
         Returns:
             list: 图片URL列表
         """
-        api_url = f"https://api.twitter.com/2/tweets/{tweet_id}"
-        
         # 获取认证信息
         cookies = self.cookie_manager.get_cookies(self.platform)
         if not cookies:
@@ -731,30 +734,59 @@ class TwitterDownloader(BaseDownloader):
         auth_token = cookies.get('auth_token', '')
         ct0 = cookies.get('ct0', '')
         
+        # GraphQL API端点
+        api_url = "https://twitter.com/i/api/graphql/2ICDjqPd81tulZcYrtpTuQ/TweetResultByRestId"
+        
+        # 请求参数
+        variables = {
+            "tweetId": tweet_id,
+            "withCommunity": False,
+            "includePromotedContent": False,
+            "withVoice": False
+        }
+        
+        features = {
+            "creator_subscriptions_tweet_preview_api_enabled": True,
+            "tweetypie_unmention_optimization_enabled": True,
+            "responsive_web_edit_tweet_api_enabled": True,
+            "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
+            "view_counts_everywhere_api_enabled": True,
+            "longform_notetweets_consumption_enabled": True,
+            "responsive_web_twitter_article_tweet_consumption_enabled": False,
+            "tweet_awards_web_tipping_enabled": False,
+            "freedom_of_speech_not_reach_fetch_enabled": True,
+            "standardized_nudges_misinfo": True,
+            "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
+            "longform_notetweets_rich_text_read_enabled": True,
+            "longform_notetweets_inline_media_enabled": True,
+            "responsive_web_graphql_exclude_directive_enabled": True,
+            "verified_phone_label_enabled": False,
+            "responsive_web_media_download_video_enabled": False,
+            "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
+            "responsive_web_graphql_timeline_navigation_enabled": True,
+            "responsive_web_enhance_cards_enabled": False
+        }
+        
+        params = {
+            "variables": json.dumps(variables),
+            "features": json.dumps(features)
+        }
+        
         headers = {
             'User-Agent': self._get_random_user_agent(),
             'Authorization': f'Bearer {auth_token}',
             'x-csrf-token': ct0,
             'Cookie': f'auth_token={auth_token}; ct0={ct0}',
+            'x-twitter-auth-type': 'OAuth2Session',
             'x-twitter-client-language': 'en',
-            'x-twitter-active-user': 'yes',
-            'Referer': 'https://twitter.com/',
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Connection': 'keep-alive'
-        }
-        
-        params = {
-            'tweet.fields': 'attachments,entities',
-            'expansions': 'attachments.media_keys',
-            'media.fields': 'url,preview_image_url'
+            'x-twitter-active-user': 'yes'
         }
         
         try:
             response = requests.get(
                 api_url,
-                headers=headers,
                 params=params,
+                headers=headers,
                 proxies={'http': self.config.proxy, 'https': self.config.proxy} if self.config.proxy else None,
                 timeout=30
             )
@@ -764,12 +796,16 @@ class TwitterDownloader(BaseDownloader):
             images = []
             
             # 从响应中提取图片URL
-            media = data.get('includes', {}).get('media', [])
-            for item in media:
-                url = item.get('url') or item.get('preview_image_url')
-                if url:
-                    url = f"{url}?format=jpg&name=4096x4096"
-                    images.append(url)
+            tweet_data = data.get('data', {}).get('tweet', {})
+            if 'legacy' in tweet_data:
+                legacy = tweet_data['legacy']
+                if 'extended_entities' in legacy and 'media' in legacy['extended_entities']:
+                    for media in legacy['extended_entities']['media']:
+                        if media['type'] == 'photo':
+                            img_url = media.get('media_url_https', '')
+                            if img_url:
+                                img_url = f"{img_url}?format=jpg&name=4096x4096"
+                                images.append(img_url)
             
             return images
             
