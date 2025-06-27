@@ -22,6 +22,7 @@ from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
 
 from .exceptions import DownloadCanceled
+from ..utils.cookie_manager import CookieManager
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -39,104 +40,129 @@ class BaseDownloader:
     
     提供基本的下载功能和进度回调机制。
     支持线程安全的日志记录和文件操作。
+    集成Cookie管理功能。
     
     Attributes:
-        save_dir: str, 保存目录
+        platform: str, 平台标识
+        save_dir: Path, 保存目录
         progress_callback: Optional[Callable[[float, str], None]], 进度回调函数
         session: requests.Session, 会话对象
         proxy: Optional[str], 代理地址
         timeout: int, 超时时间(秒)
         max_retries: int, 最大重试次数
+        cookie_manager: CookieManager, Cookie管理器
     """
     
     def __init__(
         self,
-        save_dir: str,
+        platform: str,
+        save_dir: Union[str, Path],
         progress_callback: Optional[Callable[[float, str], None]] = None,
         proxy: Optional[str] = None,
         timeout: int = 10,
-        max_retries: int = 3
+        max_retries: int = 3,
+        cookie_manager: Optional[CookieManager] = None
     ):
         """初始化下载器。
         
         Args:
+            platform: 平台标识
             save_dir: 保存目录
             progress_callback: 进度回调函数，接收进度(0-1)和状态消息
             proxy: 代理地址(如"http://127.0.0.1:1080")
             timeout: 超时时间(秒)
             max_retries: 最大重试次数
+            cookie_manager: Cookie管理器，如果不提供则创建新实例
         """
+        self.platform = platform
         self.save_dir = Path(save_dir)
         self.progress_callback = progress_callback
-        self.is_canceled = False
+        self.proxy = proxy
         self.timeout = timeout
+        self.max_retries = max_retries
+        self.is_canceled = False
+        
+        # 初始化Cookie管理器
+        self.cookie_manager = cookie_manager or CookieManager()
         
         # 创建保存目录
         with file_lock:
             self.save_dir.mkdir(parents=True, exist_ok=True)
         
         # 创建会话
-        self.session = self._create_session(proxy, timeout, max_retries)
+        self.session = self._create_session()
         
+        # 记录初始化信息
         with log_lock:
-            logger.info(f"初始化下载器: save_dir={save_dir}, proxy={proxy}")
-        
-    def _create_session(self, proxy: Optional[str], timeout: int, max_retries: int) -> requests.Session:
-        """创建会话。
-        
-        配置代理和重试策略。
+            logger.info(
+                f"初始化下载器: platform={platform}, save_dir={save_dir}, "
+                f"proxy={proxy}, cookies={bool(self.cookie_manager.get_cookies(platform))}"
+            )
+            
+    def _create_session(self) -> requests.Session:
+        """创建HTTP会话。
         
         Returns:
-            requests.Session: 会话对象
+            requests.Session: 配置好的会话对象
         """
         session = requests.Session()
         
-        # 配置代理
-        if proxy:
-            session.proxies = {
-                "http": proxy,
-                "https": proxy
-            }
-            
-        # 配置重试
+        # 配置重试策略
         retry_strategy = Retry(
-            total=max_retries,  # 最大重试次数
-            backoff_factor=1,  # 重试等待时间 = {backoff_factor} * (2 ** ({retry_number} - 1))
-            status_forcelist=[500, 502, 503, 504]  # 需要重试的HTTP状态码
+            total=self.max_retries,
+            backoff_factor=1,
+            status_forcelist=[500, 502, 503, 504]
         )
-        
-        # 配置适配器
         adapter = HTTPAdapter(max_retries=retry_strategy)
         session.mount("http://", adapter)
         session.mount("https://", adapter)
         
+        # 配置代理
+        if self.proxy:
+            session.proxies = {
+                "http": self.proxy,
+                "https": self.proxy
+            }
+            
+        # 配置Cookie
+        cookies = self.cookie_manager.get_cookies(self.platform)
+        if cookies:
+            session.cookies.update(cookies)
+            
+        # 配置默认请求头
+        session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/91.0.4472.124 Safari/537.36"
+            )
+        })
+        
         return session
         
-    def _load_config(self) -> Dict[str, Any]:
-        """加载配置。
-        
-        从config.json加载配置。
+    def get_download_options(self) -> Dict[str, Any]:
+        """获取下载选项。
         
         Returns:
-            Dict[str, Any]: 配置字典
-            
-        Raises:
-            DownloadError: 配置加载失败
+            Dict[str, Any]: 下载选项字典
         """
-        try:
-            config_path = Path("configs/config.json")
-            if not config_path.exists():
-                return {}
-                
-            with file_lock:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-                    
-        except Exception as e:
-            with log_lock:
-                logger.error(f"加载配置失败: {e}")
-            return {}
+        options = {
+            'timeout': self.timeout,
+            'max_retries': self.max_retries,
+            'proxy': self.proxy,
+            'cookies': self.cookie_manager.get_cookies(self.platform),
+            'headers': {
+                'Cookie': self.cookie_manager.to_header(self.platform)
+            }
+        }
+        
+        # 添加Cookie文件路径（如果存在）
+        cookie_file = self.cookie_manager.cookie_dir / f"{self.platform}.json"
+        if cookie_file.exists():
+            options['cookiefile'] = str(cookie_file)
             
+        return options
+        
     def _generate_filename(self, original_name: str, extension: str = "") -> str:
         """生成唯一的文件名。
         
@@ -203,8 +229,7 @@ class BaseDownloader:
     def download(
         self,
         url: str,
-        save_path: Union[str, Path],
-        chunk_size: int = 8192,
+        save_path: Optional[Path] = None,
         **kwargs
     ) -> bool:
         """下载文件。
@@ -212,7 +237,6 @@ class BaseDownloader:
         Args:
             url: 下载URL
             save_path: 保存路径
-            chunk_size: 分块大小(字节)
             **kwargs: 其他参数
             
         Returns:
@@ -221,70 +245,8 @@ class BaseDownloader:
         Raises:
             DownloadError: 下载失败
         """
-        try:
-            # 生成唯一文件名
-            save_path = Path(save_path)
-            unique_name = self._generate_filename(save_path.name)
-            save_path = save_path.parent / unique_name
-            
-            # 创建保存目录
-            with file_lock:
-                save_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            with log_lock:
-                logger.info(f"开始下载: {url} -> {save_path}")
-            
-            # 发送请求
-            response = self.session.get(
-                url,
-                stream=True,
-                timeout=self.timeout,
-                **kwargs
-            )
-            response.raise_for_status()
-            
-            # 获取文件大小
-            total_size = int(response.headers.get("content-length", 0))
-            
-            # 保存文件
-            with file_lock:
-                with open(save_path, "wb") as f:
-                    downloaded_size = 0
-                    for chunk in response.iter_content(chunk_size=chunk_size):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded_size += len(chunk)
-                            
-                            # 更新进度
-                            if total_size > 0:
-                                progress = downloaded_size / total_size
-                                self.update_progress(
-                                    progress,
-                                    f"已下载: {downloaded_size/1024/1024:.1f}MB"
-                                )
-                                
-                            # 检查是否取消
-                            self.check_canceled()
-            
-            with log_lock:
-                logger.info(f"下载完成: {save_path}")
-            return True
-            
-        except requests.Timeout:
-            with log_lock:
-                logger.error(f"下载超时: {url}")
-            raise DownloadError(f"下载超时: {url}")
-            
-        except requests.RequestException as e:
-            with log_lock:
-                logger.error(f"下载失败: {url} - {e}")
-            raise DownloadError(f"下载失败: {url} - {e}")
-            
-        except Exception as e:
-            with log_lock:
-                logger.error(f"下载出错: {url} - {e}")
-            raise DownloadError(f"下载出错: {url} - {e}")
-            
+        raise NotImplementedError("子类必须实现download方法")
+
     def close(self):
         """关闭下载器。"""
         if self.session:

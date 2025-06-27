@@ -26,7 +26,10 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QDialog,
     QFormLayout,
-    QComboBox
+    QComboBox,
+    QMenuBar,
+    QMenu,
+    QStatusBar
 )
 from PySide6.QtCore import Qt, Slot, Signal
 
@@ -36,6 +39,8 @@ from src.plugins.youtube.downloader import YouTubeDownloader
 from src.plugins.youtube.config import YouTubeDownloaderConfig
 from src.plugins.twitter.downloader import TwitterDownloader
 from src.plugins.twitter.config import TwitterDownloaderConfig
+from src.utils.cookie_manager import CookieManager
+from src.gui.cookie_dialog import CookieDialog
 
 # 创建日志记录器
 logger = get_logger("gui")
@@ -264,6 +269,9 @@ class MainWindow(QMainWindow):
         # 创建主布局
         main_layout = QVBoxLayout(central_widget)
         
+        # 创建菜单栏
+        self._create_menu_bar()
+        
         # URL输入区域
         url_layout = QHBoxLayout()
         url_label = QLabel("URL:")
@@ -276,11 +284,9 @@ class MainWindow(QMainWindow):
         button_layout = QHBoxLayout()
         self.download_button = QPushButton("开始下载")
         self.cancel_button = QPushButton("取消")
-        self.auth_button = QPushButton("Twitter认证")
-        self.cancel_button.setEnabled(False)
         button_layout.addWidget(self.download_button)
         button_layout.addWidget(self.cancel_button)
-        button_layout.addWidget(self.auth_button)
+        self.cancel_button.setEnabled(False)
         
         # 进度条
         self.progress_bar = QProgressBar()
@@ -296,79 +302,140 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.progress_bar)
         main_layout.addWidget(self.log_display)
         
+        # 创建状态栏
+        self.statusBar().showMessage("就绪")
+        
+    def _create_menu_bar(self) -> None:
+        """创建菜单栏。"""
+        menubar = self.menuBar()
+        
+        # 文件菜单
+        file_menu = menubar.addMenu("文件")
+        exit_action = file_menu.addAction("退出")
+        exit_action.triggered.connect(self.close)
+        
+        # 账号菜单
+        account_menu = menubar.addMenu("账号")
+        
+        # Twitter账号管理
+        twitter_menu = account_menu.addMenu("Twitter")
+        twitter_auth_action = twitter_menu.addAction("账号管理")
+        twitter_auth_action.triggered.connect(
+            lambda: self._show_cookie_dialog("twitter")
+        )
+        
+        # YouTube账号管理
+        youtube_menu = account_menu.addMenu("YouTube")
+        youtube_auth_action = youtube_menu.addAction("账号管理")
+        youtube_auth_action.triggered.connect(
+            lambda: self._show_cookie_dialog("youtube")
+        )
+        
+    def _show_cookie_dialog(self, platform: str) -> None:
+        """显示Cookie管理对话框。
+        
+        Args:
+            platform: 平台标识
+        """
+        dialog = CookieDialog(
+            platform=platform,
+            cookie_manager=self.cookie_manager,
+            parent=self
+        )
+        
+        if dialog.exec() == QDialog.Accepted:
+            # 如果是Twitter，重新初始化下载器
+            if platform == "twitter":
+                self._init_twitter_downloader()
+                
+            # 如果是YouTube，重新初始化下载器
+            elif platform == "youtube":
+                self._init_youtube_downloader()
+                
+            logger.info(f"{platform.title()}认证信息已更新")
+            
+    def _init_twitter_downloader(self) -> None:
+        """初始化Twitter下载器。"""
+        try:
+            # 检查是否有有效的Cookie
+            cookies = self.cookie_manager.get_cookies("twitter")
+            if not cookies:
+                logger.warning("未找到Twitter Cookie")
+                self.twitter_downloader = None
+                return
+                
+            # 检查必需的Cookie
+            required_cookies = {"auth_token", "ct0"}
+            if not all(key in cookies for key in required_cookies):
+                logger.warning("Twitter Cookie不完整")
+                self.twitter_downloader = None
+                return
+                
+            # 创建Twitter配置
+            config = TwitterDownloaderConfig(
+                save_dir=Path("downloads"),
+                proxy="http://127.0.0.1:7890"
+            )
+            
+            # 创建Twitter下载器
+            self.twitter_downloader = TwitterDownloader(
+                config=config,
+                cookie_manager=self.cookie_manager
+            )
+            logger.info("Twitter下载器初始化成功")
+            
+        except Exception as e:
+            logger.error(f"初始化Twitter下载器失败: {e}")
+            self.twitter_downloader = None
+            
+    def _init_youtube_downloader(self) -> None:
+        """初始化YouTube下载器。"""
+        try:
+            # 创建YouTube配置
+            config = YouTubeDownloaderConfig(
+                save_dir=Path("downloads"),
+                proxy="http://127.0.0.1:7890",
+                max_height=1080,
+                prefer_quality="1080p",
+                merge_output_format="mp4"
+            )
+            
+            # 创建YouTube下载器
+            self.youtube_downloader = YouTubeDownloader(
+                config=config,
+                cookie_manager=self.cookie_manager
+            )
+            logger.info("YouTube下载器初始化成功")
+            
+        except Exception as e:
+            logger.error(f"初始化YouTube下载器失败: {e}")
+            self.youtube_downloader = None
+            
+    def _init_downloader(self) -> None:
+        """初始化下载器。"""
+        # 创建Cookie管理器
+        self.cookie_manager = CookieManager()
+        
+        # 初始化下载器
+        self.twitter_downloader = None
+        self.youtube_downloader = None
+        
+        # 尝试初始化Twitter下载器
+        self._init_twitter_downloader()
+        
+        # 尝试初始化YouTube下载器
+        self._init_youtube_downloader()
+        
     def _connect_signals(self) -> None:
         """连接信号和槽。"""
         # 按钮点击
         self.download_button.clicked.connect(self.start_download)
         self.cancel_button.clicked.connect(self.cancel_download)
-        self.auth_button.clicked.connect(self.show_auth_dialog)
         
         # 自定义信号
         self.download_progress.connect(self.update_progress)
         self.log_message.connect(self.log_display.append_log)
         
-    def _init_downloader(self) -> None:
-        """初始化下载器。"""
-        # 创建YouTube下载配置
-        self.youtube_config = YouTubeDownloaderConfig(
-            save_dir=Path("downloads"),
-            proxy="http://127.0.0.1:7890",
-            max_height=1080,
-            prefer_quality="1080p",
-            merge_output_format="mp4"
-        )
-        
-        # 创建Twitter下载配置
-        self.twitter_config = TwitterDownloaderConfig(
-            save_dir=Path("downloads"),
-            proxy="http://127.0.0.1:7890"
-        )
-        
-        # 创建下载器
-        self.youtube_downloader = YouTubeDownloader(
-            config=self.youtube_config
-        )
-        
-        self.twitter_downloader = None  # 稍后创建
-        
-    def show_auth_dialog(self) -> None:
-        """显示Twitter认证对话框。"""
-        dialog = AuthDialog(self)
-        if dialog.exec() == QDialog.Accepted:
-            auth_info = dialog.get_auth_info()
-            
-            # 更新Twitter配置
-            config = TwitterDownloaderConfig(
-                save_dir=Path("downloads"),
-                proxy="http://127.0.0.1:7890",
-                **auth_info
-            )
-            
-            # 创建Twitter下载器
-            self.twitter_downloader = TwitterDownloader(config=config)
-            logger.info("Twitter认证信息已更新")
-            
-    def _get_downloader(self, url: str) -> BaseDownloader:
-        """根据URL选择合适的下载器。
-        
-        Args:
-            url: 视频URL
-            
-        Returns:
-            BaseDownloader: 下载器实例
-            
-        Raises:
-            ValueError: 不支持的URL或缺少认证
-        """
-        if "youtube.com" in url or "youtu.be" in url:
-            return self.youtube_downloader
-        elif "twitter.com" in url or "x.com" in url:
-            if not self.twitter_downloader:
-                raise ValueError("请先完成Twitter认证")
-            return self.twitter_downloader
-        else:
-            raise ValueError("不支持的视频URL")
-            
     def _setup_logging(self) -> None:
         """设置日志处理。"""
         # 创建自定义的日志处理器
@@ -473,4 +540,26 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             logger.error(f"处理窗口关闭事件失败: {e}")
+            event.accept()
+
+    def _get_downloader(self, url: str) -> BaseDownloader:
+        """根据URL选择合适的下载器。
+        
+        Args:
+            url: 视频URL
+            
+        Returns:
+            BaseDownloader: 下载器实例
+            
+        Raises:
+            ValueError: 不支持的URL或缺少认证
+        """
+        if "youtube.com" in url or "youtu.be" in url:
+            return self.youtube_downloader
+        elif "twitter.com" in url or "x.com" in url:
+            if not self.twitter_downloader:
+                raise ValueError("请先完成Twitter认证")
+            return self.twitter_downloader
+        else:
+            raise ValueError("不支持的视频URL") 
             event.accept() 
