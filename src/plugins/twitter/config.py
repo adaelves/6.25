@@ -1,39 +1,37 @@
 """Twitter下载器配置模块。
 
-提供Twitter下载器的配置选项。
+该模块包含Twitter下载器的配置类。
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from pathlib import Path
 
 @dataclass
 class TwitterDownloaderConfig:
-    """Twitter下载器配置。
+    """Twitter下载器配置类。
     
     Attributes:
         save_dir: 保存目录
-        proxy: 代理地址
-        timeout: 超时时间(秒)
+        proxy: 代理设置
+        timeout: 超时设置（秒）
         max_retries: 最大重试次数
-        chunk_size: 分块大小(字节)
-        max_concurrent_downloads: 最大并发下载数
-        speed_limit: 速度限制(bytes/s)
-        custom_headers: 自定义请求头
-        retry_interval: 重试间隔（秒）
+        cookies: cookies字典
+        username: Twitter用户名
+        password: Twitter密码
+        browser_profile: 浏览器配置文件路径
+        browser_path: 浏览器数据目录路径
     """
     
     save_dir: Path = Path("downloads")
     proxy: Optional[str] = None
     timeout: int = 30
     max_retries: int = 3
-    chunk_size: int = 8192
-    max_concurrent_downloads: int = 3
-    speed_limit: Optional[int] = None
-    custom_headers: Dict[str, str] = field(default_factory=lambda: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    })
-    retry_interval: float = 2.0
+    cookies: Dict[str, Any] = field(default_factory=dict)
+    username: Optional[str] = None
+    password: Optional[str] = None
+    browser_profile: Optional[str] = None  # 例如 "chrome"
+    browser_path: Optional[str] = None  # 浏览器数据目录路径
     
     def __post_init__(self):
         """初始化后处理。"""
@@ -47,9 +45,11 @@ class TwitterDownloaderConfig:
             "proxy": self.proxy,
             "timeout": self.timeout,
             "max_retries": self.max_retries,
-            "chunk_size": self.chunk_size,
-            "max_concurrent_downloads": self.max_concurrent_downloads,
-            "speed_limit": self.speed_limit
+            "cookies": self.cookies,
+            "username": self.username,
+            "password": self.password,
+            "browser_profile": self.browser_profile,
+            "browser_path": self.browser_path
         }
         
     @classmethod
@@ -83,4 +83,39 @@ class TwitterDownloaderConfig:
             return all(var in valid_vars for var in vars_in_template)
             
         except Exception:
-            return False 
+            return False
+
+    def to_ydl_opts(self) -> Dict[str, Any]:
+        """转换为yt-dlp选项。
+        
+        Returns:
+            Dict[str, Any]: yt-dlp选项字典
+        """
+        opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'nocheckcertificate': True,
+            'retries': self.max_retries,
+            'socket_timeout': self.timeout,
+        }
+        
+        if self.proxy:
+            opts['proxy'] = self.proxy
+            
+        # 添加认证信息
+        if self.cookies:
+            opts['cookies'] = self.cookies
+        elif self.username and self.password:
+            opts['username'] = self.username
+            opts['password'] = self.password
+        elif self.browser_profile:
+            if self.browser_path:
+                # 如果指定了浏览器路径，使用 (browser_name, browser_path) 元组
+                opts['cookiesfrombrowser'] = (
+                    self.browser_profile,
+                    self.browser_path
+                )
+            else:
+                opts['cookiesfrombrowser'] = (self.browser_profile,)
+            
+        return opts 
