@@ -8,6 +8,11 @@
 """
 
 import sys
+import os
+
+# 添加项目根目录到 Python 路径
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 import logging
 from typing import Optional, Dict
 from pathlib import Path
@@ -248,6 +253,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("视频下载器")
         self.resize(800, 600)
         
+        # 设置代理
+        self.proxy = "http://127.0.0.1:7890"
+        
+        # 创建Cookie管理器
+        self.cookie_manager = CookieManager()
+        
         # 初始化UI
         self._setup_ui()
         
@@ -373,35 +384,26 @@ class MainWindow(QMainWindow):
     def _init_twitter_downloader(self) -> None:
         """初始化Twitter下载器。"""
         try:
-            # 检查是否有有效的Cookie
-            cookies = self.cookie_manager.get_cookies("twitter")
-            if not cookies:
-                logger.warning("未找到Twitter Cookie")
-                self.twitter_downloader = None
-                return
-                
-            # 检查必需的Cookie
-            required_cookies = {"auth_token", "ct0"}
-            if not all(key in cookies for key in required_cookies):
-                logger.warning("Twitter Cookie不完整")
-                self.twitter_downloader = None
-                return
-                
-            # 创建Twitter配置
+            # 加载配置
             config = TwitterDownloaderConfig(
-                save_dir=Path("downloads"),
-                proxy="http://127.0.0.1:7890"
+                save_dir=Path("downloads/twitter"),
+                proxy="http://127.0.0.1:7890",
+                timeout=30,
+                max_retries=5,
+                output_template="%(uploader)s/%(upload_date)s-%(title)s-%(id)s.%(ext)s"
             )
             
-            # 创建Twitter下载器
+            # 创建下载器
             self.twitter_downloader = TwitterDownloader(
                 config=config,
+                progress_callback=lambda p, s: self.download_progress.emit(p, s),
                 cookie_manager=self.cookie_manager
             )
+            
             logger.info("Twitter下载器初始化成功")
             
         except Exception as e:
-            logger.error(f"初始化Twitter下载器失败: {e}")
+            logger.error(f"Twitter下载器初始化失败: {str(e)}")
             self.twitter_downloader = None
             
     def _init_youtube_downloader(self) -> None:
@@ -410,7 +412,7 @@ class MainWindow(QMainWindow):
             # 创建YouTube配置
             config = YouTubeDownloaderConfig(
                 save_dir=Path("downloads"),
-                proxy="http://127.0.0.1:7890",
+                proxy=self.proxy,
                 max_height=1080,
                 prefer_quality="1080p",
                 merge_output_format="mp4"
@@ -421,6 +423,10 @@ class MainWindow(QMainWindow):
                 config=config,
                 cookie_manager=self.cookie_manager
             )
+            
+            # 设置进度回调
+            self.youtube_downloader.progress_callback = lambda p, s: self.download_progress.emit(p, s)
+            
             logger.info("YouTube下载器初始化成功")
             
         except Exception as e:
@@ -429,9 +435,6 @@ class MainWindow(QMainWindow):
             
     def _init_downloader(self) -> None:
         """初始化下载器。"""
-        # 创建Cookie管理器
-        self.cookie_manager = CookieManager()
-        
         # 初始化下载器
         self.twitter_downloader = None
         self.youtube_downloader = None
@@ -482,41 +485,54 @@ class MainWindow(QMainWindow):
     def start_download(self) -> None:
         """开始下载。"""
         url = self.url_input.text().strip()
-        
         if not url:
-            QMessageBox.warning(self, "错误", "请输入视频URL")
+            QMessageBox.warning(self, "错误", "请输入下载链接")
+            return
+            
+        # 获取下载器
+        downloader = self._get_downloader(url)
+        if not downloader:
+            QMessageBox.warning(self, "错误", "不支持的URL格式")
             return
             
         try:
-            # 获取合适的下载器
-            downloader = self._get_downloader(url)
-            
             # 更新UI状态
             self.download_btn.setEnabled(False)
+            self.channel_download_btn.setEnabled(False)
             self.cancel_btn.setEnabled(True)
-            self.url_input.setEnabled(False)
             self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("正在下载...")
             
             # 开始下载
             logger.info(f"开始下载: {url}")
-            success = downloader.download(url)
+            result = downloader.download(url)
             
-            if success:
-                logger.info("下载完成")
-                QMessageBox.information(self, "完成", "下载完成")
+            if result['success']:
+                self.progress_bar.setValue(100)
+                self.progress_bar.setFormat("下载完成")
+                QMessageBox.information(
+                    self,
+                    "下载完成",
+                    f"成功下载 {result.get('media_count', 0)} 个媒体文件"
+                )
             else:
-                logger.error("下载失败")
-                QMessageBox.warning(self, "错误", "下载失败")
+                QMessageBox.warning(
+                    self,
+                    "下载失败",
+                    result.get('message', '未知错误')
+                )
                 
         except Exception as e:
             logger.error(f"下载出错: {e}")
-            QMessageBox.critical(self, "错误", str(e))
+            QMessageBox.critical(self, "错误", f"下载失败: {str(e)}")
             
         finally:
             # 恢复UI状态
             self.download_btn.setEnabled(True)
+            self.channel_download_btn.setEnabled(True)
             self.cancel_btn.setEnabled(False)
-            self.url_input.setEnabled(True)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("%p%")
             
     @Slot()
     def cancel_download(self) -> None:
@@ -533,12 +549,20 @@ class MainWindow(QMainWindow):
             progress: 进度值（0-1）
             status: 状态消息
         """
-        # 更新进度条
-        progress_value = int(progress * 100)
-        self.progress_bar.setValue(progress_value)
-        
-        # 更新状态栏
-        self.statusBar().showMessage(status)
+        try:
+            # 更新进度条
+            if progress is not None:
+                progress_value = int(progress * 100)
+                self.progress_bar.setValue(progress_value)
+            
+            # 更新状态栏
+            if status:
+                # 限制状态消息长度
+                status = status[:100] + '...' if len(status) > 100 else status
+                self.statusBar.showMessage(status)
+                
+        except Exception as e:
+            logger.error(f"更新进度失败: {str(e)}")
         
     @Slot()
     def start_channel_download(self) -> None:
@@ -572,18 +596,34 @@ class MainWindow(QMainWindow):
             self.progress_bar.setValue(0)
             self.progress_bar.setFormat("正在获取推文列表...")
             
-            # 设置进度回调
-            def progress_callback(progress: float, status: str) -> None:
-                self.download_progress.emit(progress, status)
-                
-            downloader.progress_callback = progress_callback
-            
             # 开始下载
             try:
-                downloader.download_channel(url, max_tweets=max_tweets, max_workers=max_workers)
-                self.progress_bar.setValue(100)
-                self.progress_bar.setFormat("下载完成")
-                QMessageBox.information(self, "完成", "频道下载完成")
+                result = downloader.download_channel(
+                    url,
+                    max_count=max_tweets
+                )
+                
+                if result['success']:
+                    self.progress_bar.setValue(100)
+                    self.progress_bar.setFormat("下载完成")
+                    
+                    # 构建结果消息
+                    message = f"成功下载 {result.get('media_count', 0)} 个媒体文件"
+                    if result.get('failed_count', 0) > 0:
+                        message += f"\n失败 {result['failed_count']} 个"
+                        
+                    QMessageBox.information(
+                        self,
+                        "下载完成",
+                        message
+                    )
+                else:
+                    QMessageBox.warning(
+                        self,
+                        "下载失败",
+                        result.get('message', '未知错误')
+                    )
+                    
             except Exception as e:
                 logger.error(f"频道下载失败: {e}")
                 QMessageBox.critical(self, "错误", f"下载失败: {str(e)}")
@@ -597,6 +637,8 @@ class MainWindow(QMainWindow):
             self.download_btn.setEnabled(True)
             self.channel_download_btn.setEnabled(True)
             self.cancel_btn.setEnabled(False)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("%p%")
             
     def closeEvent(self, event) -> None:
         """窗口关闭事件处理。
@@ -617,26 +659,29 @@ class MainWindow(QMainWindow):
             logger.error(f"处理窗口关闭事件失败: {e}")
             event.accept()
 
-    def _get_downloader(self, url: str) -> BaseDownloader:
+    def _get_downloader(self, url: str) -> Optional[BaseDownloader]:
         """根据URL获取对应的下载器。
         
         Args:
             url: 下载URL
             
         Returns:
-            BaseDownloader: 下载器实例
-            
-        Raises:
-            ValueError: URL不支持
+            Optional[BaseDownloader]: 下载器实例或None
         """
-        if "twitter.com" in url or "x.com" in url:
-            if not hasattr(self, "twitter_downloader"):
+        url = url.lower()
+        if "youtube.com" in url or "youtu.be" in url:
+            return self.youtube_downloader
+        elif "twitter.com" in url or "x.com" in url:
+            if not self.twitter_downloader:
                 self._init_twitter_downloader()
             return self.twitter_downloader
-        elif "youtube.com" in url or "youtu.be" in url:
-            if not hasattr(self, "youtube_downloader"):
-                self._init_youtube_downloader()
-            return self.youtube_downloader
-        else:
-            raise ValueError("不支持的URL类型") 
-            event.accept() 
+        return None
+
+if __name__ == "__main__":
+    import sys
+    from PySide6.QtWidgets import QApplication
+    
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec()) 

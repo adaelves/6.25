@@ -3,35 +3,29 @@
 该模块包含Twitter下载器的配置类。
 """
 
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 from dataclasses import dataclass, field
 from pathlib import Path
 
 @dataclass
 class TwitterDownloaderConfig:
-    """Twitter下载器配置类。
+    """Twitter下载器配置。
     
     Attributes:
         save_dir: 保存目录
-        proxy: 代理设置
-        timeout: 超时设置（秒）
+        proxy: 代理地址
+        timeout: 超时时间（秒）
         max_retries: 最大重试次数
-        cookies: cookies字典
-        username: Twitter用户名
-        password: Twitter密码
-        browser_profile: 浏览器配置文件路径
-        browser_path: 浏览器数据目录路径
+        cookies_file: Cookie文件路径
+        output_template: 输出文件名模板
     """
     
-    save_dir: Path = Path("downloads")
+    save_dir: Path = Path("downloads/twitter")
     proxy: Optional[str] = None
     timeout: int = 30
-    max_retries: int = 3
-    cookies: Dict[str, Any] = field(default_factory=dict)
-    username: Optional[str] = None
-    password: Optional[str] = None
-    browser_profile: Optional[str] = None  # 例如 "chrome"
-    browser_path: Optional[str] = None  # 浏览器数据目录路径
+    max_retries: int = 5
+    cookies_file: str = "config/twitter_cookies.txt"
+    output_template: str = "%(uploader)s/%(upload_date)s-%(title)s-%(id)s.%(ext)s"
     
     def __post_init__(self):
         """初始化后处理。"""
@@ -45,11 +39,8 @@ class TwitterDownloaderConfig:
             "proxy": self.proxy,
             "timeout": self.timeout,
             "max_retries": self.max_retries,
-            "cookies": self.cookies,
-            "username": self.username,
-            "password": self.password,
-            "browser_profile": self.browser_profile,
-            "browser_path": self.browser_path
+            "cookies_file": self.cookies_file,
+            "output_template": self.output_template,
         }
         
     @classmethod
@@ -103,19 +94,7 @@ class TwitterDownloaderConfig:
             opts['proxy'] = self.proxy
             
         # 添加认证信息
-        if self.cookies:
-            opts['cookies'] = self.cookies
-        elif self.username and self.password:
-            opts['username'] = self.username
-            opts['password'] = self.password
-        elif self.browser_profile:
-            if self.browser_path:
-                # 如果指定了浏览器路径，使用 (browser_name, browser_path) 元组
-                opts['cookiesfrombrowser'] = (
-                    self.browser_profile,
-                    self.browser_path
-                )
-            else:
-                opts['cookiesfrombrowser'] = (self.browser_profile,)
+        if self.cookies_file:
+            opts['cookies'] = self.cookies_file
             
         return opts 

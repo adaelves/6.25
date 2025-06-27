@@ -16,8 +16,22 @@
     "output_dir": "downloads"
   },
   "network": {
-    "proxy": null,
-    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    "proxy": "http://127.0.0.1:7890",
+    "timeout": 30,
+    "retries": 5,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  },
+  "twitter": {
+    "cookies_file": "config/twitter_cookies.txt",
+    "output_template": "%(uploader)s/%(upload_date)s-%(title)s-%(id)s.%(ext)s",
+    "ydl_opts": {
+      "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+      "cookiefile": "config/twitter_cookies.txt",
+      "extract_flat": "in_playlist",
+      "ignoreerrors": true,
+      "no_warnings": true,
+      "quiet": true
+    }
   },
   "task": {
     "sort": {

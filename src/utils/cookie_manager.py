@@ -198,9 +198,51 @@ class CookieManager:
             file_path = self.cookie_dir / f"{platform}.json"
             if file_path.exists():
                 file_path.unlink()
-                self._cache.pop(platform, None)
+                self.clear_cache(platform)
                 logger.debug(f"Cookie已删除: {platform}")
-            return True
+                return True
+            return False
         except Exception as e:
             logger.error(f"删除Cookie失败 {platform}: {e}")
-            return False 
+            return False
+
+    def has_cookies(self, platform: Optional[str] = None) -> bool:
+        """检查是否有Cookie。
+        
+        Args:
+            platform: 平台标识，如果为None则检查是否有任何Cookie
+            
+        Returns:
+            bool: 是否有Cookie
+        """
+        if platform:
+            cookies = self.get_cookies(platform)
+            return bool(cookies)
+        else:
+            # 检查是否有任何平台的Cookie
+            for file in self.cookie_dir.glob("*.json"):
+                if self._load_json_file(file):
+                    return True
+            return False
+
+    def get_cookie_file(self, platform: str = "twitter") -> str:
+        """获取Cookie文件路径。
+        
+        Args:
+            platform: 平台标识
+            
+        Returns:
+            str: Cookie文件路径
+        """
+        cookie_file = self.cookie_dir / f"{platform}.txt"
+        
+        # 如果文件不存在，创建一个空的Netscape格式的Cookie文件
+        if not cookie_file.exists():
+            cookie_file.write_text(
+                "# Netscape HTTP Cookie File\n" +
+                "# https://curl.haxx.se/rfc/cookie_spec.html\n" +
+                "# This is a generated file!  Do not edit.\n\n",
+                encoding='utf-8'
+            )
+            
+        return str(cookie_file) 
