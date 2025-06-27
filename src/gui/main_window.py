@@ -262,48 +262,64 @@ class MainWindow(QMainWindow):
         
     def _setup_ui(self) -> None:
         """设置UI界面。"""
-        # 创建中央部件
+        # 创建中心部件
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
         # 创建主布局
         main_layout = QVBoxLayout(central_widget)
         
-        # 创建菜单栏
-        self._create_menu_bar()
-        
         # URL输入区域
         url_layout = QHBoxLayout()
-        url_label = QLabel("URL:")
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("请输入视频URL")
-        url_layout.addWidget(url_label)
+        self.url_input.setPlaceholderText("请输入视频/图片URL或Twitter用户主页URL")
         url_layout.addWidget(self.url_input)
         
-        # 按钮区域
+        # 下载按钮区域
         button_layout = QHBoxLayout()
-        self.download_button = QPushButton("开始下载")
-        self.cancel_button = QPushButton("取消")
-        button_layout.addWidget(self.download_button)
-        button_layout.addWidget(self.cancel_button)
-        self.cancel_button.setEnabled(False)
+        self.download_btn = QPushButton("下载")
+        self.channel_download_btn = QPushButton("下载全部媒体")
+        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn.setEnabled(False)
+        button_layout.addWidget(self.download_btn)
+        button_layout.addWidget(self.channel_download_btn)
+        button_layout.addWidget(self.cancel_btn)
+        
+        # 下载选项区域
+        options_layout = QHBoxLayout()
+        self.max_tweets_label = QLabel("最大推文数:")
+        self.max_tweets_input = QLineEdit("100")
+        self.max_tweets_input.setFixedWidth(80)
+        self.max_workers_label = QLabel("并发数:")
+        self.max_workers_input = QLineEdit("3")
+        self.max_workers_input.setFixedWidth(80)
+        options_layout.addWidget(self.max_tweets_label)
+        options_layout.addWidget(self.max_tweets_input)
+        options_layout.addWidget(self.max_workers_label)
+        options_layout.addWidget(self.max_workers_input)
+        options_layout.addStretch()
         
         # 进度条
         self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setAlignment(Qt.AlignCenter)
         
-        # 日志显示区域
-        self.log_display = LogHandler()
+        # 日志区域
+        self.log_viewer = LogHandler()
         
-        # 添加所有控件到主布局
+        # 添加所有组件到主布局
         main_layout.addLayout(url_layout)
         main_layout.addLayout(button_layout)
+        main_layout.addLayout(options_layout)
         main_layout.addWidget(self.progress_bar)
-        main_layout.addWidget(self.log_display)
+        main_layout.addWidget(self.log_viewer)
+        
+        # 创建菜单栏
+        self._create_menu_bar()
         
         # 创建状态栏
-        self.statusBar().showMessage("就绪")
+        self.statusBar = QStatusBar()
+        self.setStatusBar(self.statusBar)
         
     def _create_menu_bar(self) -> None:
         """创建菜单栏。"""
@@ -428,13 +444,14 @@ class MainWindow(QMainWindow):
         
     def _connect_signals(self) -> None:
         """连接信号和槽。"""
-        # 按钮点击
-        self.download_button.clicked.connect(self.start_download)
-        self.cancel_button.clicked.connect(self.cancel_download)
+        # 下载按钮信号
+        self.download_btn.clicked.connect(self.start_download)
+        self.channel_download_btn.clicked.connect(self.start_channel_download)
+        self.cancel_btn.clicked.connect(self.cancel_download)
         
-        # 自定义信号
+        # 进度信号
         self.download_progress.connect(self.update_progress)
-        self.log_message.connect(self.log_display.append_log)
+        self.log_message.connect(self.log_viewer.append_log)
         
     def _setup_logging(self) -> None:
         """设置日志处理。"""
@@ -475,8 +492,8 @@ class MainWindow(QMainWindow):
             downloader = self._get_downloader(url)
             
             # 更新UI状态
-            self.download_button.setEnabled(False)
-            self.cancel_button.setEnabled(True)
+            self.download_btn.setEnabled(False)
+            self.cancel_btn.setEnabled(True)
             self.url_input.setEnabled(False)
             self.progress_bar.setValue(0)
             
@@ -497,8 +514,8 @@ class MainWindow(QMainWindow):
             
         finally:
             # 恢复UI状态
-            self.download_button.setEnabled(True)
-            self.cancel_button.setEnabled(False)
+            self.download_btn.setEnabled(True)
+            self.cancel_btn.setEnabled(False)
             self.url_input.setEnabled(True)
             
     @Slot()
@@ -523,6 +540,64 @@ class MainWindow(QMainWindow):
         # 更新状态栏
         self.statusBar().showMessage(status)
         
+    @Slot()
+    def start_channel_download(self) -> None:
+        """开始频道下载。"""
+        url = self.url_input.text().strip()
+        if not url:
+            QMessageBox.warning(self, "错误", "请输入Twitter用户主页URL")
+            return
+            
+        try:
+            # 获取下载器
+            downloader = self._get_downloader(url)
+            if not isinstance(downloader, TwitterDownloader):
+                QMessageBox.warning(self, "错误", "该功能仅支持Twitter用户主页")
+                return
+                
+            # 获取下载参数
+            try:
+                max_tweets = int(self.max_tweets_input.text())
+                max_workers = int(self.max_workers_input.text())
+                if max_tweets <= 0 or max_workers <= 0:
+                    raise ValueError
+            except ValueError:
+                QMessageBox.warning(self, "错误", "请输入有效的数字")
+                return
+                
+            # 更新UI状态
+            self.download_btn.setEnabled(False)
+            self.channel_download_btn.setEnabled(False)
+            self.cancel_btn.setEnabled(True)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("正在获取推文列表...")
+            
+            # 设置进度回调
+            def progress_callback(progress: float, status: str) -> None:
+                self.download_progress.emit(progress, status)
+                
+            downloader.progress_callback = progress_callback
+            
+            # 开始下载
+            try:
+                downloader.download_channel(url, max_tweets=max_tweets, max_workers=max_workers)
+                self.progress_bar.setValue(100)
+                self.progress_bar.setFormat("下载完成")
+                QMessageBox.information(self, "完成", "频道下载完成")
+            except Exception as e:
+                logger.error(f"频道下载失败: {e}")
+                QMessageBox.critical(self, "错误", f"下载失败: {str(e)}")
+                
+        except Exception as e:
+            logger.error(f"初始化下载器失败: {e}")
+            QMessageBox.critical(self, "错误", f"初始化下载器失败: {str(e)}")
+            
+        finally:
+            # 恢复UI状态
+            self.download_btn.setEnabled(True)
+            self.channel_download_btn.setEnabled(True)
+            self.cancel_btn.setEnabled(False)
+            
     def closeEvent(self, event) -> None:
         """窗口关闭事件处理。
         
@@ -543,23 +618,25 @@ class MainWindow(QMainWindow):
             event.accept()
 
     def _get_downloader(self, url: str) -> BaseDownloader:
-        """根据URL选择合适的下载器。
+        """根据URL获取对应的下载器。
         
         Args:
-            url: 视频URL
+            url: 下载URL
             
         Returns:
             BaseDownloader: 下载器实例
             
         Raises:
-            ValueError: 不支持的URL或缺少认证
+            ValueError: URL不支持
         """
-        if "youtube.com" in url or "youtu.be" in url:
-            return self.youtube_downloader
-        elif "twitter.com" in url or "x.com" in url:
-            if not self.twitter_downloader:
-                raise ValueError("请先完成Twitter认证")
+        if "twitter.com" in url or "x.com" in url:
+            if not hasattr(self, "twitter_downloader"):
+                self._init_twitter_downloader()
             return self.twitter_downloader
+        elif "youtube.com" in url or "youtu.be" in url:
+            if not hasattr(self, "youtube_downloader"):
+                self._init_youtube_downloader()
+            return self.youtube_downloader
         else:
-            raise ValueError("不支持的视频URL") 
+            raise ValueError("不支持的URL类型") 
             event.accept() 
