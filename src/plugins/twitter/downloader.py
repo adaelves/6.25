@@ -9,6 +9,8 @@ import logging
 from typing import Optional, Dict, Any
 from pathlib import Path
 import yt_dlp
+from datetime import datetime, timezone
+import time
 
 from src.core.downloader import BaseDownloader
 from src.core.exceptions import DownloadError
@@ -52,6 +54,46 @@ class TwitterDownloader(BaseDownloader):
         if config.cookies:
             self.cookie_manager.save_cookies("twitter", config.cookies)
         
+    def _save_cookies_netscape(self, cookies: Dict[str, str], cookie_file: Path) -> None:
+        """将Cookie保存为Netscape格式。
+        
+        Args:
+            cookies: Cookie字典
+            cookie_file: 保存路径
+            
+        Notes:
+            Netscape格式:
+            domain\tHTTP_ONLY\tpath\tSECURE\texpiry\tname\tvalue
+        """
+        # 确保目录存在
+        cookie_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        # 设置默认值
+        domains = [".twitter.com", ".x.com"]  # 支持两个域名
+        default_path = "/"
+        # 设置过期时间为1年后
+        expiry = int(time.time()) + 365 * 24 * 60 * 60
+        
+        try:
+            with open(cookie_file, 'w', encoding='utf-8') as f:
+                # 写入文件头
+                f.write("# Netscape HTTP Cookie File\n")
+                f.write("# https://curl.haxx.se/rfc/cookie_spec.html\n")
+                f.write("# This is a generated file!  Do not edit.\n\n")
+                
+                # 写入每个Cookie到两个域名
+                for domain in domains:
+                    for name, value in cookies.items():
+                        # domain HTTP_ONLY path SECURE expiry name value
+                        line = f"{domain}\tTRUE\t{default_path}\tTRUE\t{expiry}\t{name}\t{value}\n"
+                        f.write(line)
+                    
+            logger.info(f"Cookie已保存到Netscape格式文件: {cookie_file}")
+            
+        except Exception as e:
+            logger.error(f"保存Netscape格式Cookie失败: {e}")
+            raise
+        
     def _progress_hook(self, d: Dict[str, Any]) -> None:
         """下载进度回调。
         
@@ -76,107 +118,134 @@ class TwitterDownloader(BaseDownloader):
                     f" ({speed_text}, ETA: {eta_text})"
                 )
                 
-    def download(self, url: str, save_path: Optional[Path] = None) -> bool:
+    def get_download_options(self) -> Dict[str, Any]:
+        """获取下载选项。
+        
+        Returns:
+            Dict[str, Any]: 下载选项字典
+            
+        Notes:
+            - 使用Netscape格式的Cookie文件
+            - 添加必要的认证头部
+            - 启用详细日志和错误报告
+        """
+        # 检查Cookie状态
+        cookies = self.cookie_manager.get_cookies("twitter")
+        if not cookies:
+            logger.error("未找到Twitter Cookie")
+            raise ValueError("请先完成Twitter认证")
+            
+        # 检查必需的Cookie
+        required_cookies = {"auth_token", "ct0"}
+        missing_cookies = required_cookies - set(cookies.keys())
+        if missing_cookies:
+            logger.error(f"缺少必需的Cookie: {missing_cookies}")
+            raise ValueError("Twitter认证信息不完整")
+            
+        # 保存为Netscape格式
+        cookie_dir = Path("config/cookies")
+        cookie_file = cookie_dir / "twitter.txt"  # 使用.txt扩展名
+        self._save_cookies_netscape(cookies, cookie_file)
+            
+        # 构建下载选项
+        options = {
+            # Cookie认证
+            'cookiefile': str(cookie_file),
+            'http_headers': {
+                # 基本头部
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Content-Type': 'application/json',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin',
+                
+                # Twitter特定头部
+                'X-Twitter-Auth-Type': 'OAuth2Session',
+                'X-Twitter-Client-Language': 'en',
+                'X-Twitter-Active-User': 'yes',
+                'Authorization': f'Bearer {cookies.get("auth_token", "")}',
+                'x-csrf-token': cookies.get('ct0', ''),
+                
+                # 安全头部
+                'Referer': 'https://twitter.com/',
+                'Origin': 'https://twitter.com',
+                'DNT': '1'
+            },
+            
+            # Twitter API设置
+            'extractor_args': {
+                'twitter': {
+                    'api': ['graphql'],
+                }
+            },
+            
+            # 认证设置
+            'username': cookies.get('auth_token', ''),  # 使用auth_token作为用户名
+            'password': cookies.get('ct0', ''),        # 使用ct0作为密码
+            
+            # 错误处理和日志
+            'ignoreerrors': False,
+            'verbose': True,
+            
+            # 下载设置
+            'format': 'bestvideo+bestaudio/best',
+            'merge_output_format': 'mp4',
+            'outtmpl': str(self.config.save_dir / '%(title)s.%(ext)s'),
+            
+            # 代理设置
+            'proxy': self.config.proxy if self.config.proxy else None,
+            
+            # 重试设置
+            'retries': 10,
+            'retry_sleep': lambda n: 5 * (n + 1),
+            
+            # 调试设置
+            'debug_printtraffic': True,
+            'no_color': True
+        }
+        
+        logger.debug(f"下载选项: {options}")
+        return options
+        
+    def download(self, url: str) -> bool:
         """下载视频。
         
         Args:
             url: 视频URL
-            save_path: 可选的保存路径
             
         Returns:
             bool: 是否下载成功
             
         Raises:
-            ValueError: URL无效
-            DownloadError: 下载失败
+            ValueError: Cookie无效或不完整
+            Exception: 下载过程中的其他错误
         """
         try:
-            # 确定保存路径
-            if save_path is None:
-                info = self.get_video_info(url)
-                filename = f"{info['title']}_{info['id']}.mp4"
-                filename = self._generate_filename(filename)
-                save_path = self.save_dir / filename
-                
-            # 确保输出目录存在
-            save_path.parent.mkdir(parents=True, exist_ok=True)
+            logger.info(f"开始下载Twitter视频: {url}")
             
-            # 检查临时文件
-            temp_path = save_path.with_suffix(save_path.suffix + '.part')
-            resume_size = temp_path.stat().st_size if temp_path.exists() else 0
+            # 获取下载选项
+            options = self.get_download_options()
             
-            if resume_size > 0:
-                logger.info(f"发现未完成的下载: {temp_path}, 已下载: {resume_size} 字节")
+            # 添加进度回调
+            options['progress_hooks'] = [self._progress_hook]
             
-            # 获取配置选项
-            ydl_opts = self._get_ydl_opts(save_path, resume_size)
-            
-            # 下载视频
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # 执行下载
+            with yt_dlp.YoutubeDL(options) as ydl:
+                logger.debug(f"使用选项下载: {options}")
                 ydl.download([url])
                 
+            logger.info("Twitter视频下载完成")
             return True
             
-        except yt_dlp.utils.DownloadError as e:
-            logger.error(f"下载失败: {e}")
-            raise DownloadError(str(e))
+        except ValueError as e:
+            logger.error(f"Twitter认证错误: {e}")
+            raise
+            
         except Exception as e:
-            logger.error(f"下载失败: {e}")
-            raise DownloadError(str(e))
-            
-    def _get_ydl_opts(self, save_path: Path, resume_size: int = 0) -> Dict[str, Any]:
-        """获取yt-dlp选项。
-        
-        Args:
-            save_path: 保存路径
-            resume_size: 断点续传的起始字节
-            
-        Returns:
-            Dict[str, Any]: yt-dlp选项
-        """
-        # 获取基类的下载选项
-        base_opts = self.get_download_options()
-        
-        # 合并yt-dlp特定选项
-        opts = {
-            'format': 'best',  # 最佳质量
-            'outtmpl': str(save_path),
-            'quiet': True,
-            'no_warnings': True,
-            'nocheckcertificate': True,
-            'retries': self.max_retries,
-            'socket_timeout': self.timeout,
-            'progress_hooks': [self._progress_hook],
-            'continuedl': True,
-        }
-        
-        # 添加认证信息
-        if base_opts.get('cookies'):
-            opts['cookies'] = base_opts['cookies']
-        elif self.config.username and self.config.password:
-            opts['username'] = self.config.username
-            opts['password'] = self.config.password
-        elif self.config.browser_profile:
-            if self.config.browser_path:
-                opts['cookiesfrombrowser'] = (
-                    self.config.browser_profile,
-                    self.config.browser_path
-                )
-            else:
-                opts['cookiesfrombrowser'] = (self.config.browser_profile,)
-                
-        # 添加代理
-        if base_opts.get('proxy'):
-            opts['proxy'] = base_opts['proxy']
-                
-        # 断点续传
-        if resume_size > 0:
-            opts.update({
-                'resume': True,
-                'start_byte': resume_size
-            })
-            
-        return opts
+            logger.error(f"Twitter视频下载出错: {e}")
+            raise
             
     def get_video_info(self, url: str) -> Dict[str, Any]:
         """获取视频信息。
@@ -192,7 +261,7 @@ class TwitterDownloader(BaseDownloader):
             DownloadError: 获取信息失败
         """
         try:
-            ydl_opts = self._get_ydl_opts(Path("temp.mp4"))
+            ydl_opts = self.get_download_options()
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 return ydl.extract_info(url, download=False)
                 
