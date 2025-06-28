@@ -1,0 +1,89 @@
+# 资源监控告警规则配置
+
+# 全局配置
+global:
+  update_interval: 1.0  # 监控更新间隔（秒）
+  history_size: 3600   # 历史记录大小
+  alert_interval: 300  # 告警间隔（秒）
+
+# 告警规则
+rules:
+  # CPU告警规则
+  - name: cpu_high
+    metric: cpu_percent
+    threshold: 90
+    duration: 300  # 持续时间（秒）
+    action: notify
+    message: "CPU使用率超过90%"
+    severity: warning
+
+  # 内存告警规则
+  - name: memory_high
+    metric: memory_percent
+    threshold: 90
+    duration: 300
+    action: restart_worker
+    message: "内存使用率超过90%，重启工作进程"
+    severity: critical
+
+  # 磁盘告警规则
+  - name: disk_high
+    metric: disk_percent
+    threshold: 90
+    duration: 600
+    action: notify
+    message: "磁盘使用率超过90%"
+    severity: warning
+
+  # 下载任务告警规则
+  - name: downloads_high
+    metric: open_files
+    threshold: 100
+    duration: 60
+    action: throttle
+    message: "同时下载任务过多"
+    severity: warning
+
+  # 网络连接告警规则
+  - name: connections_high
+    metric: connections
+    threshold: 50
+    duration: 60
+    action: notify
+    message: "网络连接数过多"
+    severity: info
+
+# 动作定义
+actions:
+  notify:
+    type: notification
+    channels: [log, ui]
+    
+  restart_worker:
+    type: command
+    command: restart_worker.sh
+    timeout: 30
+    
+  throttle:
+    type: api
+    endpoint: /api/throttle
+    params:
+      delay: 5
+      max_tasks: 50
+
+# 告警级别定义
+severities:
+  critical:
+    color: red
+    sound: true
+    popup: true
+    
+  warning:
+    color: yellow
+    sound: false
+    popup: true
+    
+  info:
+    color: blue
+    sound: false
+    popup: false 
