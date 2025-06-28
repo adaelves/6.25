@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 import time
 
 from src.core.downloader import BaseDownloader
-from src.core.exceptions import DownloadError, APIError
+from src.core.exceptions import DownloadError, APIError, AgeRestrictedError
 from src.utils.cookie_manager import CookieManager
 from .config import YouTubeDownloaderConfig
 
@@ -420,64 +420,99 @@ class YouTubeDownloader(BaseDownloader):
         """
         return 'youtube.com' in url or 'youtu.be' in url
 
+    def is_hdr_video(self, format_info: Dict[str, Any]) -> bool:
+        """检测视频是否为HDR格式。
+        
+        通过检查视频格式信息中的dynamic_range字段和format_note字段，
+        判断视频是否为HDR格式。
+        
+        Args:
+            format_info: 视频格式信息
+            
+        Returns:
+            bool: 是否为HDR视频
+        """
+        return any(
+            f.get('dynamic_range') == 'HDR' or 
+            'hdr' in f.get('format_note', '').lower()
+            for f in format_info['formats']
+        )
+
+    def handle_age_restricted(self, url: str) -> None:
+        """处理年龄限制视频。
+        
+        检查URL是否需要年龄验证，如果需要则尝试使用Cookie访问。
+        
+        Args:
+            url: 视频URL
+            
+        Raises:
+            AgeRestrictedError: 需要年龄验证但没有Cookie时抛出
+        """
+        if "age_verification=1" in url or "age_restricted=1" in url:
+            logger.warning("需要年龄验证，尝试携带Cookie...")
+            if not self.cookie_manager or not self.cookie_manager.get_cookies("youtube"):
+                raise AgeRestrictedError("请提供年龄验证Cookie")
+            logger.info("已找到Cookie，尝试访问年龄限制视频")
+
     def download(self, url: str, format_id: Optional[str] = None) -> Dict[str, Any]:
         """下载YouTube视频。
-
-        支持以下URL类型:
-        - 单个视频
-        - 播放列表
-        - 频道视频
-        - 直播回放
-
+        
+        支持指定格式ID下载，自动处理年龄限制。
+        
         Args:
-            url: YouTube URL
-            format_id: 指定格式ID(可选)
-
+            url: 视频URL
+            format_id: 格式ID（可选）
+            
         Returns:
             Dict[str, Any]: 下载结果
-
+            
         Raises:
             DownloadError: 下载失败
+            AgeRestrictedError: 年龄限制且无Cookie
         """
         if not self._validate_url(url):
             raise DownloadError(f"无效的YouTube URL: {url}")
             
         try:
-            # 验证Cookie
-            if self.cookie_manager and self.cookie_manager.get_cookies("youtube"):
-                self._validate_cookie()
+            # 处理年龄限制
+            self.handle_age_restricted(url)
             
-            # 如果指定了格式，更新下载选项
-            if format_id:
-                self.yt_dlp_opts['format'] = f"{format_id}+bestaudio/best"
-            
-            # 开始下载
+            # 获取视频信息
             with yt_dlp.YoutubeDL(self.yt_dlp_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                
-                # 处理下载结果
-                result = {
+                info = ydl.extract_info(url, download=False)
+                if not info:
+                    raise DownloadError("无法获取视频信息")
+                    
+                # 检测HDR
+                is_hdr = self.is_hdr_video(info)
+                if is_hdr:
+                    logger.info("检测到HDR视频")
+                    
+                # 如果指定了格式ID，更新下载选项
+                if format_id:
+                    self.yt_dlp_opts['format'] = format_id
+                    
+                # 下载视频
+                result = ydl.download([url])
+                if result != 0:
+                    raise DownloadError("下载失败")
+                    
+                return {
+                    'success': True,
+                    'url': url,
                     'title': info.get('title', ''),
                     'uploader': info.get('uploader', ''),
                     'duration': info.get('duration', 0),
-                    'view_count': info.get('view_count', 0),
-                    'like_count': info.get('like_count', 0),
-                    'description': info.get('description', ''),
-                    'upload_date': info.get('upload_date', ''),
-                    'webpage_url': info.get('webpage_url', url),
+                    'is_hdr': is_hdr,
+                    'format_id': format_id or info.get('format_id', '')
                 }
                 
-                # 添加下载文件信息
-                if 'requested_downloads' in info:
-                    result['downloads'] = [{
-                        'path': d['filepath'],
-                        'format': d['format'],
-                        'filesize': d.get('filesize', 0),
-                        'ext': d['ext']
-                    } for d in info['requested_downloads']]
-                    
-                return result
-                
+        except yt_dlp.utils.DownloadError as e:
+            error_msg = str(e)
+            if "age" in error_msg.lower():
+                raise AgeRestrictedError("需要年龄验证")
+            raise DownloadError(f"下载失败: {error_msg}")
+            
         except Exception as e:
-            logger.error(f"下载失败: {str(e)}")
             raise DownloadError(f"下载失败: {str(e)}")

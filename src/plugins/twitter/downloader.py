@@ -19,9 +19,10 @@ from urllib.parse import urlparse
 import hashlib
 import random
 from bs4 import BeautifulSoup
+from ratelimit import limits, sleep_and_retry
 
 from src.core.downloader import BaseDownloader
-from src.core.exceptions import DownloadError, APIError
+from src.core.exceptions import DownloadError, APIError, RateLimitException
 from src.utils.cookie_manager import CookieManager
 from .config import TwitterDownloaderConfig
 from .api_client import TwitterAPIClient
@@ -472,69 +473,80 @@ class TwitterDownloader(BaseDownloader):
             'Cache-Control': 'no-cache'
         }
 
+    @sleep_and_retry
+    @limits(calls=50, period=900)  # 15分钟50次请求
+    def _call_api(self, url: str) -> requests.Response:
+        """调用Twitter API，带限流处理。
+        
+        Args:
+            url: API URL
+            
+        Returns:
+            requests.Response: API响应
+            
+        Raises:
+            RateLimitException: 触发限流时抛出
+        """
+        response = self.session.get(
+            url,
+            headers=self._random_headers(),
+            proxies=self._get_proxies(),
+            timeout=self.config.timeout
+        )
+        
+        if response.status_code == 429:
+            reset_time = int(response.headers.get('x-rate-limit-reset', 300))
+            logger.warning(f"触发Twitter API限流，将在{reset_time}秒后重试")
+            time.sleep(reset_time + 5)  # 缓冲5秒
+            raise RateLimitException("触发Twitter API限流")
+            
+        return response
+
+    def _safe_hash_file(self, path: str) -> str:
+        """内存安全的文件哈希计算。
+        
+        使用分块读取方式计算大文件的MD5哈希值，
+        避免一次性读入整个文件导致内存溢出。
+        
+        Args:
+            path: 文件路径
+            
+        Returns:
+            str: 文件的MD5哈希值
+        """
+        md5 = hashlib.md5()
+        with open(path, 'rb') as f:
+            # 每次读取8KB
+            for chunk in iter(lambda: f.read(8192), b''):
+                md5.update(chunk)
+        return md5.hexdigest()
+
     def _download_media(self, url: str, tweet_id: str = "") -> bytes:
         """下载媒体文件。
         
-        支持自动CDN切换和重试。
-        
         Args:
             url: 媒体URL
-            tweet_id: 推文ID(可选)
+            tweet_id: 推文ID
             
         Returns:
             bytes: 媒体内容
             
         Raises:
-            DownloadError: 下载失败
+            DownloadError: 下载失败时抛出
         """
-        # 构建CDN镜像URL列表
-        cdn_urls = []
-        base_domain = "pbs.twimg.com"
-        for cdn in self.CDN_MIRRORS:
-            if cdn != base_domain:
-                cdn_urls.append(url.replace(base_domain, cdn))
-        
-        # 添加原始URL
-        all_urls = [url] + cdn_urls
-        
-        # 开始重试循环
-        for retry in range(self.max_retries):
-            # 随机打乱URL顺序
-            random.shuffle(all_urls)
+        try:
+            # 使用限流保护的API调用
+            response = self._call_api(url)
+            response.raise_for_status()
+            return response.content
             
-            for cdn_url in all_urls:
-                try:
-                    response = self.session.get(
-                        cdn_url,
-                        headers=self._random_headers(),
-                        timeout=self.timeout,
-                        stream=True
-                    )
-                    
-                    # 处理403错误
-                    if response.status_code == 403:
-                        logger.warning(f"访问受限(403): {cdn_url}")
-                        # 更换请求头重试
-                        response = self.session.get(
-                            cdn_url,
-                            headers=self._random_headers(),
-                            timeout=self.timeout,
-                            stream=True
-                        )
-                    
-                    response.raise_for_status()
-                    return response.content
-                    
-                except requests.RequestException as e:
-                    logger.warning(f"CDN {cdn_url} 下载失败: {str(e)}")
-                    continue
-                    
-            # 所有CDN都失败，等待后重试
-            wait_time = min(2 ** retry, 8)  # 最多等待8秒
-            logger.info(f"所有CDN均失败，等待{wait_time}秒后重试...")
-            time.sleep(wait_time)
+        except RateLimitException:
+            # 重试逻辑由装饰器处理
+            raise
             
-        raise DownloadError(f"媒体下载失败，所有CDN均不可用: {url}")
+        except Exception as e:
+            logger.error(f"下载媒体失败: {str(e)}")
+            raise DownloadError(f"下载媒体失败: {str(e)}")
 
     def _calculate_media_hash(self, content: bytes) -> str:
         """计算媒体文件哈希值。

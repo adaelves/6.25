@@ -326,4 +326,56 @@ class DownloadError(BiliBiliError):
 
 class AuthError(BiliBiliError):
     """认证错误。"""
-    pass 
+    pass
+
+class RateLimitException(Exception):
+    """限流异常。
+    
+    当API请求触发限流时抛出。
+    """
+    pass
+
+class AgeRestrictedError(PlatformError):
+    """年龄限制错误。
+    
+    当访问需要年龄验证的内容时抛出。
+    
+    Attributes:
+        min_age: Optional[int], 最小年龄要求
+    """
+    
+    def __init__(
+        self,
+        platform: str,
+        msg: str,
+        min_age: Optional[int] = None,
+        **kwargs
+    ):
+        """初始化年龄限制错误。
+        
+        Args:
+            platform: 平台标识
+            msg: 错误消息
+            min_age: 最小年龄要求（可选）
+            **kwargs: 传递给父类的参数
+        """
+        super().__init__(platform, msg, **kwargs)
+        self.min_age = min_age
+        if min_age is not None:
+            self._append_message(f"minimum age={min_age}")
+
+# YouTube 相关异常
+class YouTubeError(PlatformError):
+    """YouTube错误基类。"""
+    
+    def __init__(self, msg: str, code: Optional[int] = None, **kwargs):
+        super().__init__("youtube", msg, code=code, **kwargs)
+
+class YouTubeAgeRestrictedError(YouTubeError, AgeRestrictedError):
+    """YouTube年龄限制错误。"""
+    
+    def __init__(self, msg: str, min_age: Optional[int] = None, code: Optional[int] = None, **kwargs):
+        YouTubeError.__init__(self, msg, code=code, **kwargs)
+        self.min_age = min_age
+        if min_age is not None:
+            self._append_message(f"minimum age={min_age}") 
