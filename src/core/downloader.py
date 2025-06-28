@@ -22,9 +22,10 @@ import requests
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
 import yt_dlp
+from urllib.parse import urlparse
 
 from .exceptions import DownloadCanceled
-from ..utils.cookie_manager import CookieManager
+from src.utils.cookie_manager import CookieManager
 
 # 配置日志
 logger = logging.getLogger(__name__)

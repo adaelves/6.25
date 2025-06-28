@@ -14,11 +14,15 @@ from asyncio import AbstractEventLoop
 from concurrent.futures import ThreadPoolExecutor
 
 # 添加项目根目录到 Python 路径
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, PROJECT_ROOT)
 
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pathlib import Path
+from datetime import datetime
+from queue import Queue
+import json
 
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -37,9 +41,14 @@ from PySide6.QtWidgets import (
     QComboBox,
     QMenuBar,
     QMenu,
-    QStatusBar
+    QStatusBar,
+    QApplication,
+    QSystemTrayIcon,
+    QStyle,
+    QStyleFactory
 )
-from PySide6.QtCore import Qt, Slot, Signal, QTimer, QThread
+from PySide6.QtCore import Qt, Slot, Signal, QTimer, QThread, QSettings
+from PySide6.QtGui import QIcon, QPalette, QColor, QAction
 
 from src.core.downloader import BaseDownloader
 from src.utils.logger import get_logger
@@ -51,6 +60,11 @@ from src.utils.cookie_manager import CookieManager
 from src.gui.cookie_dialog import CookieDialog
 from src.plugins.pornhub.downloader import PornhubDownloader
 from src.plugins.pornhub.config import PornhubDownloaderConfig
+from src.core.exceptions import DownloadError
+from src.utils.config import ConfigManager
+from .theme import ThemeManager, load_style
+from .download_dialog import DownloadDialog
+from .settings_dialog import SettingsDialog
 
 # 创建日志记录器
 logger = get_logger("gui")
@@ -113,6 +127,234 @@ class AsyncDownloader(QThread):
             if self.loop:
                 self.loop.close()
 
+class DownloadThread(QThread):
+    """下载线程。
+    
+    处理单个下载任务的执行。
+    支持进度更新和状态回调。
+    
+    Signals:
+        progress_updated: 进度更新信号
+        status_updated: 状态更新信号
+        download_finished: 下载完成信号
+        download_error: 下载错误信号
+    """
+    
+    progress_updated = Signal(float, str)  # 进度值, 状态消息
+    status_updated = Signal(str)  # 状态消息
+    download_finished = Signal(dict)  # 下载结果
+    download_error = Signal(str)  # 错误消息
+    
+    def __init__(
+        self,
+        downloader: BaseDownloader,
+        url: str,
+        save_dir: str,
+        progress_bar: Optional[QProgressBar] = None,
+        parent: Optional[QWidget] = None
+    ):
+        """初始化下载线程。
+        
+        Args:
+            downloader: 下载器实例
+            url: 下载URL
+            save_dir: 保存目录
+            progress_bar: 进度条控件
+            parent: 父控件
+        """
+        super().__init__(parent)
+        self.downloader = downloader
+        self.url = url
+        self.save_dir = save_dir
+        self.progress_bar = progress_bar
+        
+        # 暂停和取消标志
+        self._paused = False
+        self._canceled = False
+        
+        # 下载状态
+        self.current_file = ""
+        self.download_speed = 0
+        self.eta = 0
+        self.total_size = 0
+        self.downloaded_size = 0
+        
+        # 创建计时器用于更新UI
+        self._update_timer = QTimer()
+        self._update_timer.timeout.connect(self._update_ui)
+        self._update_timer.start(100)  # 100ms更新一次
+        
+    def run(self):
+        """执行下载任务。"""
+        try:
+            # 设置进度回调
+            self.downloader.progress_callback = self._progress_callback
+            
+            # 开始下载
+            self.status_updated.emit("正在准备下载...")
+            result = self.downloader.download(self.url)
+            
+            if self._canceled:
+                self.status_updated.emit("下载已取消")
+                return
+                
+            self.download_finished.emit(result)
+            self.status_updated.emit("下载完成")
+            
+        except Exception as e:
+            logger.error(f"下载失败: {str(e)}")
+            self.download_error.emit(str(e))
+            self.status_updated.emit("下载失败")
+            
+        finally:
+            self._update_timer.stop()
+            
+    def pause(self):
+        """暂停下载。"""
+        if not self._paused:
+            self._paused = True
+            if self.progress_bar:
+                self.progress_bar.setEnabled(False)  # 冻结进度条
+            self.status_updated.emit("下载已暂停")
+            logger.info("下载已暂停")
+            
+    def resume(self):
+        """恢复下载。"""
+        if self._paused:
+            self._paused = False
+            if self.progress_bar:
+                self.progress_bar.setEnabled(True)  # 恢复进度条
+            self.status_updated.emit("正在下载...")
+            logger.info("下载已恢复")
+            
+    def cancel(self):
+        """取消下载。"""
+        self._canceled = True
+        self.downloader.cancel()
+        self.status_updated.emit("正在取消...")
+        logger.info("下载已取消")
+        
+    def _progress_callback(self, progress: float, status: str):
+        """进度回调函数。
+        
+        Args:
+            progress: 进度值(0-1)
+            status: 状态消息
+        """
+        if self._paused:
+            return
+            
+        self.progress_updated.emit(progress, status)
+        
+        # 解析状态消息
+        try:
+            if "下载中" in status:
+                parts = status.split(" - ")
+                self.current_file = parts[0].replace("下载中: ", "")
+                if len(parts) > 1:
+                    speed_part = parts[1]
+                    if "MB/s" in speed_part:
+                        self.download_speed = float(speed_part.replace("MB/s", ""))
+                if len(parts) > 2:
+                    eta_part = parts[2]
+                    if "剩余" in eta_part and "秒" in eta_part:
+                        self.eta = int(eta_part.replace("剩余", "").replace("秒", ""))
+        except Exception:
+            pass
+            
+    def _update_ui(self):
+        """更新UI显示。"""
+        if not self._paused and self.progress_bar:
+            # 更新进度条文本
+            text_parts = []
+            if self.current_file:
+                text_parts.append(os.path.basename(self.current_file))
+            if self.download_speed > 0:
+                text_parts.append(f"{self.download_speed:.1f}MB/s")
+            if self.eta > 0:
+                text_parts.append(f"剩余{self.eta}秒")
+                
+            if text_parts:
+                self.progress_bar.setFormat("%p% - " + " - ".join(text_parts))
+
+class ThemeManager:
+    """主题管理器。
+    
+    管理应用程序的主题设置。
+    支持明暗主题切换。
+    
+    Attributes:
+        settings: QSettings, 应用程序设置
+        dark_mode: bool, 是否为暗色主题
+    """
+    
+    def __init__(self):
+        """初始化主题管理器。"""
+        self.settings = QSettings()
+        self.dark_mode = self.settings.value("theme/dark_mode", False, type=bool)
+        
+    def switch_dark_mode(self, enable: bool):
+        """切换暗色主题。
+        
+        Args:
+            enable: 是否启用暗色主题
+        """
+        try:
+            # 保存设置
+            self.dark_mode = enable
+            self.settings.setValue("theme/dark_mode", enable)
+            
+            # 获取应用程序实例
+            app = QApplication.instance()
+            if not app:
+                return
+                
+            # 加载并应用样式表
+            style = load_style(enable)
+            app.setStyleSheet(style)
+            
+            # 更新调色板
+            palette = QPalette()
+            if enable:
+                # 暗色主题颜色
+                palette.setColor(QPalette.Window, QColor(53, 53, 53))
+                palette.setColor(QPalette.WindowText, Qt.white)
+                palette.setColor(QPalette.Base, QColor(25, 25, 25))
+                palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
+                palette.setColor(QPalette.ToolTipBase, Qt.white)
+                palette.setColor(QPalette.ToolTipText, Qt.white)
+                palette.setColor(QPalette.Text, Qt.white)
+                palette.setColor(QPalette.Button, QColor(53, 53, 53))
+                palette.setColor(QPalette.ButtonText, Qt.white)
+                palette.setColor(QPalette.BrightText, Qt.red)
+                palette.setColor(QPalette.Link, QColor(42, 130, 218))
+                palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+                palette.setColor(QPalette.HighlightedText, Qt.black)
+            else:
+                # 亮色主题颜色
+                palette = app.style().standardPalette()
+                
+            # 应用调色板
+            app.setPalette(palette)
+            
+            # 强制刷新所有控件
+            for widget in app.allWidgets():
+                # 更新调色板
+                widget.setPalette(palette)
+                # 更新样式表
+                widget.setStyleSheet(widget.styleSheet())
+                # 强制重绘
+                widget.update()
+                
+            logger.info(f"主题切换{'成功' if enable else '关闭'}")
+            
+        except Exception as e:
+            logger.error(f"切换主题失败: {str(e)}")
+            
+    def apply_theme(self):
+        """应用当前主题设置。"""
+        self.switch_dark_mode(self.dark_mode)
+
 class MainWindow(QMainWindow):
     """下载器主窗口。"""
     
@@ -122,6 +364,9 @@ class MainWindow(QMainWindow):
     
     def __init__(self):
         super().__init__()
+        
+        # 初始化主题管理器
+        self.theme_manager = ThemeManager()
         
         # 初始化UI
         self._setup_ui()
@@ -146,6 +391,9 @@ class MainWindow(QMainWindow):
         
         # 保存活动的下载线程
         self.active_downloaders = []
+        
+        # 应用主题
+        self.theme_manager.apply_theme()
         
     def _create_menu_bar(self) -> None:
         """创建菜单栏。"""
@@ -611,6 +859,14 @@ class MainWindow(QMainWindow):
                 
         except Exception as e:
             logger.error(f"更新进度失败: {str(e)}")
+
+    def _on_theme_changed(self, checked: bool):
+        """主题切换回调。
+        
+        Args:
+            checked: 是否选中
+        """
+        self.theme_manager.switch_dark_mode(checked)
 
 if __name__ == "__main__":
     import sys

@@ -8,11 +8,13 @@
 import os
 import logging
 import json
-from typing import Optional, Dict, Any, List, Callable
+from typing import Optional, Dict, Any, List, Callable, Union
 from pathlib import Path
 import yt_dlp
 import requests
 from bs4 import BeautifulSoup
+from datetime import datetime, timedelta
+import time
 
 from src.core.downloader import BaseDownloader
 from src.core.exceptions import DownloadError, APIError
@@ -30,6 +32,30 @@ class YouTubeDownloader(BaseDownloader):
     Attributes:
         config: YouTubeDownloaderConfig, 下载器配置
     """
+    
+    # 视频格式定义
+    FORMAT_PRIORITIES = {
+        '4k': {
+            'height': 2160,
+            'label': '4K',
+            'vcodec': ['vp09', 'avc1']
+        },
+        'hdr': {
+            'height': 1440,
+            'label': 'HDR',
+            'vcodec': ['vp09.2', 'av01']
+        },
+        'fhd': {
+            'height': 1080,
+            'label': 'FHD',
+            'vcodec': ['avc1', 'vp09']
+        },
+        'hd': {
+            'height': 720,
+            'label': 'HD',
+            'vcodec': ['avc1', 'vp09']
+        }
+    }
     
     def __init__(
         self,
@@ -61,7 +87,7 @@ class YouTubeDownloader(BaseDownloader):
         # 验证Cookie
         if cookie_manager and cookie_manager.get_cookies("youtube"):
             try:
-                self.check_cookie_valid()
+                self._validate_cookie()
                 logger.info("YouTube Cookie 验证成功")
             except ValueError as e:
                 logger.warning(f"YouTube Cookie 验证失败: {str(e)}")
@@ -116,6 +142,142 @@ class YouTubeDownloader(BaseDownloader):
             cookie_file = self.cookie_manager.get_cookie_file("youtube")
             if os.path.exists(cookie_file):
                 self.yt_dlp_opts['cookiefile'] = cookie_file
+
+    def get_available_formats(self, url: str) -> List[Dict[str, Any]]:
+        """动态获取支持的分辨率。
+        
+        获取视频支持的所有格式，并按分辨率排序。
+        
+        Args:
+            url: 视频URL
+            
+        Returns:
+            List[Dict[str, Any]]: 格式列表，按分辨率降序排列
+            
+        Raises:
+            DownloadError: 获取格式失败
+        """
+        try:
+            # 创建临时yt-dlp选项
+            opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': True,
+                'proxy': self.config.proxy
+            }
+            
+            # 如果有Cookie，添加Cookie
+            if self.cookie_manager:
+                cookie_file = self.cookie_manager.get_cookie_file("youtube")
+                if os.path.exists(cookie_file):
+                    opts['cookiefile'] = cookie_file
+            
+            # 获取视频信息
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if not info:
+                    raise DownloadError("无法获取视频信息")
+                    
+                formats = info.get('formats', [])
+                if not formats:
+                    raise DownloadError("无法获取视频格式")
+                    
+                # 过滤并排序格式
+                video_formats = []
+                for fmt in formats:
+                    # 只保留有分辨率的视频格式
+                    if fmt.get('height') and fmt.get('vcodec') != 'none':
+                        # 添加格式标签
+                        fmt['label'] = self._get_format_label(fmt)
+                        video_formats.append(fmt)
+                        
+                # 按分辨率降序排序
+                video_formats.sort(
+                    key=lambda x: (x.get('height', 0), x.get('tbr', 0)), 
+                    reverse=True
+                )
+                
+                logger.info(f"获取到 {len(video_formats)} 个可用格式")
+                return video_formats
+                
+        except Exception as e:
+            logger.error(f"获取视频格式失败: {str(e)}")
+            raise DownloadError(f"获取视频格式失败: {str(e)}")
+
+    def _get_format_label(self, fmt: Dict[str, Any]) -> str:
+        """获取格式标签。
+        
+        Args:
+            fmt: 格式信息
+            
+        Returns:
+            str: 格式标签
+        """
+        height = fmt.get('height', 0)
+        vcodec = fmt.get('vcodec', '').lower()
+        
+        # 检查是否是HDR
+        is_hdr = any(codec in vcodec for codec in ['vp09.2', 'av01'])
+        
+        # 获取质量标签
+        quality = None
+        for name, info in self.FORMAT_PRIORITIES.items():
+            if height >= info['height']:
+                quality = info['label']
+                break
+        quality = quality or f"{height}p"
+        
+        # 构建完整标签
+        label_parts = [quality]
+        if is_hdr:
+            label_parts.append('HDR')
+        if fmt.get('fps', 0) > 30:
+            label_parts.append(f"{fmt['fps']}fps")
+            
+        return ' '.join(label_parts)
+
+    def _validate_cookie(self) -> bool:
+        """验证Cookie有效性。
+        
+        检查Cookie是否存在且未过期。
+        
+        Returns:
+            bool: Cookie是否有效
+            
+        Raises:
+            ValueError: Cookie无效或已过期
+        """
+        try:
+            cookies = self.cookie_manager.get_cookies("youtube")
+            if not cookies:
+                raise ValueError("未找到YouTube Cookie")
+                
+            # 检查过期时间
+            expire_time = None
+            for name, value in cookies.items():
+                if name.upper() == 'SESSION_EXPIRE':
+                    try:
+                        expire_time = datetime.fromisoformat(value)
+                        break
+                    except ValueError:
+                        pass
+                        
+            if not expire_time:
+                # 如果没有过期时间，尝试访问会员内容验证
+                return self.check_cookie_valid()
+                
+            # 检查是否过期
+            if expire_time <= datetime.now():
+                raise ValueError(f"Cookie已过期: {expire_time}")
+                
+            # 检查是否即将过期（7天内）
+            if expire_time <= datetime.now() + timedelta(days=7):
+                logger.warning(f"Cookie即将过期: {expire_time}")
+                
+            return True
+            
+        except Exception as e:
+            raise ValueError(f"验证Cookie失败: {str(e)}")
 
     def check_cookie_valid(self) -> bool:
         """验证YouTube Cookie是否有效。
@@ -258,7 +420,7 @@ class YouTubeDownloader(BaseDownloader):
         """
         return 'youtube.com' in url or 'youtu.be' in url
 
-    def download(self, url: str) -> Dict[str, Any]:
+    def download(self, url: str, format_id: Optional[str] = None) -> Dict[str, Any]:
         """下载YouTube视频。
 
         支持以下URL类型:
@@ -269,6 +431,7 @@ class YouTubeDownloader(BaseDownloader):
 
         Args:
             url: YouTube URL
+            format_id: 指定格式ID(可选)
 
         Returns:
             Dict[str, Any]: 下载结果
@@ -282,7 +445,11 @@ class YouTubeDownloader(BaseDownloader):
         try:
             # 验证Cookie
             if self.cookie_manager and self.cookie_manager.get_cookies("youtube"):
-                self.check_cookie_valid()
+                self._validate_cookie()
+            
+            # 如果指定了格式，更新下载选项
+            if format_id:
+                self.yt_dlp_opts['format'] = f"{format_id}+bestaudio/best"
             
             # 开始下载
             with yt_dlp.YoutubeDL(self.yt_dlp_opts) as ydl:

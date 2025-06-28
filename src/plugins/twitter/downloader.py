@@ -7,7 +7,7 @@
 import os
 import logging
 import json
-from typing import Optional, Dict, Any, List, Callable, Generator
+from typing import Optional, Dict, Any, List, Callable, Generator, Tuple, Set
 from pathlib import Path
 import yt_dlp
 from datetime import datetime
@@ -17,6 +17,8 @@ import re
 import requests
 from urllib.parse import urlparse
 import hashlib
+import random
+from bs4 import BeautifulSoup
 
 from src.core.downloader import BaseDownloader
 from src.core.exceptions import DownloadError, APIError
@@ -29,14 +31,30 @@ logger = logging.getLogger(__name__)
 class TwitterDownloader(BaseDownloader):
     """Twitter视频下载器。
     
-    支持API和浏览器混合下载模式。
-    自动在API失败时降级到浏览器模拟。
+    支持会员视频下载和字幕下载。
+    自动处理年龄限制和会员限制。
     
     Attributes:
         config: TwitterDownloaderConfig, 下载器配置
         api_client: TwitterAPIClient, API客户端
     """
     
+    # CDN镜像列表
+    CDN_MIRRORS = [
+        "pbs.twimg.com",  # 官方CDN
+        "twimg1.sinaimg.cn",  # 新浪CDN
+        "twimg2.sinaimg.cn",
+        "twimg3.sinaimg.cn",
+        "twimg.example-cdn.com"  # 示例CDN
+    ]
+    
+    # 请求头列表
+    USER_AGENTS = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15'
+    ]
+
     def __init__(
         self,
         config: TwitterDownloaderConfig,
@@ -71,6 +89,12 @@ class TwitterDownloader(BaseDownloader):
         
         # 设置yt-dlp
         self._setup_yt_dlp()
+        
+        # 初始化会话
+        self.session = self._create_session()
+        
+        # 初始化去重缓存
+        self._dedup_cache: Set[Tuple[str, str]] = set()
 
     def _setup_yt_dlp(self):
         """设置yt-dlp下载器。"""
@@ -428,6 +452,150 @@ class TwitterDownloader(BaseDownloader):
         except Exception:
             return None
 
+    def _random_headers(self) -> Dict[str, str]:
+        """生成随机请求头。
+        
+        Returns:
+            Dict[str, str]: 请求头字典
+        """
+        return {
+            'User-Agent': random.choice(self.USER_AGENTS),
+            'Accept': 'image/webp,*/*',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Referer': 'https://twitter.com/',
+            'Sec-Fetch-Dest': 'image',
+            'Sec-Fetch-Mode': 'no-cors',
+            'Sec-Fetch-Site': 'cross-site',
+            'Pragma': 'no-cache',
+            'Cache-Control': 'no-cache'
+        }
+
+    def _download_media(self, url: str, tweet_id: str = "") -> bytes:
+        """下载媒体文件。
+        
+        支持自动CDN切换和重试。
+        
+        Args:
+            url: 媒体URL
+            tweet_id: 推文ID(可选)
+            
+        Returns:
+            bytes: 媒体内容
+            
+        Raises:
+            DownloadError: 下载失败
+        """
+        # 构建CDN镜像URL列表
+        cdn_urls = []
+        base_domain = "pbs.twimg.com"
+        for cdn in self.CDN_MIRRORS:
+            if cdn != base_domain:
+                cdn_urls.append(url.replace(base_domain, cdn))
+        
+        # 添加原始URL
+        all_urls = [url] + cdn_urls
+        
+        # 开始重试循环
+        for retry in range(self.max_retries):
+            # 随机打乱URL顺序
+            random.shuffle(all_urls)
+            
+            for cdn_url in all_urls:
+                try:
+                    response = self.session.get(
+                        cdn_url,
+                        headers=self._random_headers(),
+                        timeout=self.timeout,
+                        stream=True
+                    )
+                    
+                    # 处理403错误
+                    if response.status_code == 403:
+                        logger.warning(f"访问受限(403): {cdn_url}")
+                        # 更换请求头重试
+                        response = self.session.get(
+                            cdn_url,
+                            headers=self._random_headers(),
+                            timeout=self.timeout,
+                            stream=True
+                        )
+                    
+                    response.raise_for_status()
+                    return response.content
+                    
+                except requests.RequestException as e:
+                    logger.warning(f"CDN {cdn_url} 下载失败: {str(e)}")
+                    continue
+                    
+            # 所有CDN都失败，等待后重试
+            wait_time = min(2 ** retry, 8)  # 最多等待8秒
+            logger.info(f"所有CDN均失败，等待{wait_time}秒后重试...")
+            time.sleep(wait_time)
+            
+        raise DownloadError(f"媒体下载失败，所有CDN均不可用: {url}")
+
+    def _calculate_media_hash(self, content: bytes) -> str:
+        """计算媒体文件哈希值。
+        
+        Args:
+            content: 媒体内容
+            
+        Returns:
+            str: MD5哈希值
+        """
+        return hashlib.md5(content).hexdigest()
+
+    def _remove_dupes(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """复合去重逻辑。
+        
+        基于推文ID和媒体文件哈希的组合去重。
+        
+        Args:
+            items: 媒体项列表
+            
+        Returns:
+            List[Dict[str, Any]]: 去重后的列表
+        """
+        unique_items = []
+        seen_keys = set()
+        
+        for item in items:
+            # 获取媒体内容
+            try:
+                content = self._download_media(item['url'], item.get('tweet_id', ''))
+                media_hash = self._calculate_media_hash(content)
+            except Exception as e:
+                logger.error(f"计算媒体哈希失败: {str(e)}")
+                continue
+                
+            # 构建去重键
+            dedup_key = (item.get('tweet_id', ''), media_hash)
+            
+            # 检查是否重复
+            if dedup_key not in seen_keys and dedup_key not in self._dedup_cache:
+                seen_keys.add(dedup_key)
+                self._dedup_cache.add(dedup_key)
+                
+                # 添加哈希信息
+                item['media_hash'] = media_hash
+                unique_items.append(item)
+                
+                logger.debug(f"添加新媒体: {item.get('tweet_id', 'unknown')} ({media_hash})")
+            else:
+                logger.info(f"跳过重复媒体: {item.get('tweet_id', 'unknown')} ({media_hash})")
+                
+                # 如果文件已存在，尝试删除
+                if 'path' in item and os.path.exists(item['path']):
+                    try:
+                        os.remove(item['path'])
+                        logger.info(f"删除重复文件: {item['path']}")
+                    except Exception as e:
+                        logger.warning(f"删除重复文件失败: {item['path']} - {str(e)}")
+                        
+        return unique_items
+
     def download(self, url: str) -> Dict[str, Any]:
         """下载Twitter内容。
 
@@ -454,8 +622,8 @@ class TwitterDownloader(BaseDownloader):
             if "/status/" in url:
                 raw_result = self._download_tweet(url)
                 if raw_result.get('media'):
-                    # 使用基类的去重功能
-                    raw_result['media'] = self._remove_duplicates(raw_result['media'])
+                    # 使用复合去重逻辑
+                    raw_result['media'] = self._remove_dupes(raw_result['media'])
                 return raw_result
             elif "/i/lists/" in url:
                 return self._download_list(url)
