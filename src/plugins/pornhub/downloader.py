@@ -31,6 +31,11 @@ class PornhubDownloader(BaseDownloader):
     - m3u8流媒体下载
     - 自动重试和恢复
     - 进度显示
+    - 视频信息提取和存储
+    
+    下载器实现了两种下载方式：
+    1. 自定义m3u8下载器：专门处理m3u8流媒体
+    2. yt-dlp下载器：作为默认下载器和备选方案
     
     Attributes:
         config: PornhubDownloaderConfig, 下载器配置
@@ -106,6 +111,12 @@ class PornhubDownloader(BaseDownloader):
     def _m3u8_downloader(self, m3u8_url: str) -> str:
         """自定义m3u8下载器。
 
+        专门用于处理m3u8流媒体下载，支持：
+        - 自动提取base_uri
+        - 片段重试和恢复
+        - 详细的进度显示
+        - 自定义HTTP头
+
         Args:
             m3u8_url: m3u8文件URL
 
@@ -128,8 +139,8 @@ class PornhubDownloader(BaseDownloader):
             parsed_url = urlparse(m3u8_url)
             base_uri = f"{parsed_url.scheme}://{parsed_url.netloc}{os.path.dirname(parsed_url.path)}/"
             
-            # 解析m3u8
-            playlist = m3u8.loads(response.text, base_uri=base_uri)
+            # 解析m3u8（不使用base_uri参数，因为某些版本不支持）
+            playlist = m3u8.loads(response.text)
             if not playlist or not playlist.segments:
                 raise DownloadError("无效的m3u8文件")
                 
@@ -147,8 +158,11 @@ class PornhubDownloader(BaseDownloader):
                     if not isinstance(segment, m3u8.model.Segment):
                         continue
                         
-                    # 获取片段URL
-                    segment_url = segment.absolute_uri or urljoin(base_uri, segment.uri)
+                    # 获取片段URL（手动处理base_uri）
+                    segment_url = segment.uri
+                    if not segment_url.startswith(('http://', 'https://')):
+                        segment_url = urljoin(base_uri, segment_url)
+                    
                     if not segment_url:
                         logger.warning(f"跳过无效片段: {segment}")
                         continue
@@ -202,11 +216,19 @@ class PornhubDownloader(BaseDownloader):
     def download(self, url: str) -> Dict[str, Any]:
         """下载视频。
 
+        该方法实现了两级下载策略：
+        1. 首先尝试使用自定义m3u8下载器
+        2. 如果m3u8下载失败，自动降级到yt-dlp下载器
+
         Args:
             url: 视频URL
 
         Returns:
-            Dict[str, Any]: 下载结果
+            Dict[str, Any]: 下载结果，包含：
+                - success: 是否成功
+                - url: 原始URL
+                - file_path: 下载文件路径（如果成功）
+                - info: 视频信息（元数据）
 
         Raises:
             DownloadError: 下载失败
@@ -257,8 +279,13 @@ class PornhubDownloader(BaseDownloader):
                     }
                     
         except Exception as e:
-            logger.error(f"下载失败: {str(e)}")
-            raise DownloadError(f"下载失败: {str(e)}")
+            error_msg = f"下载失败: {str(e)}"
+            logger.error(error_msg)
+            return {
+                'success': False,
+                'url': url,
+                'error': error_msg
+            }
 
     def _progress_hook(self, d: Dict[str, Any]):
         """下载进度回调。
