@@ -7,6 +7,10 @@ from typing import Dict, Any, Optional, Union
 from dataclasses import dataclass, field
 from pathlib import Path
 import json
+import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class DownloaderConfig:
@@ -175,4 +179,190 @@ class DownloaderConfig:
         # 清理文件名中的非法字符
         filename = "".join(c for c in filename if c.isprintable() and c not in r'<>:"/\|?*')
         
-        return filename.strip() 
+        return filename.strip()
+
+class ConfigManager:
+    """配置管理器。
+    
+    负责配置文件的读写和版本迁移。
+    支持配置版本管理和自动迁移。
+    
+    Attributes:
+        config_file: Path, 配置文件路径
+        current_version: int, 当前配置版本
+        config: Dict[str, Any], 当前配置
+    """
+    
+    # 当前配置版本
+    CURRENT_VERSION = 2
+    
+    # 默认配置
+    DEFAULT_CONFIG = {
+        'version': CURRENT_VERSION,
+        'downloads': 'downloads',
+        'cookies': {
+            'twitter': None,
+            'youtube': None,
+            'pornhub': None
+        },
+        'proxy': None,
+        'timeout': 30,
+        'max_retries': 3,
+        'language': 'zh_CN'
+    }
+    
+    def __init__(self, config_file: str = 'config.json'):
+        """初始化配置管理器。
+        
+        Args:
+            config_file: 配置文件路径
+        """
+        self.config_file = Path(config_file)
+        self.config = self.load()
+        
+    def load(self) -> Dict[str, Any]:
+        """加载配置。
+        
+        如果配置文件不存在，创建默认配置。
+        如果配置版本过低，自动迁移到最新版本。
+        
+        Returns:
+            Dict[str, Any]: 配置字典
+        """
+        try:
+            if not self.config_file.exists():
+                logger.info(f"配置文件不存在，创建默认配置: {self.config_file}")
+                self.save(self.DEFAULT_CONFIG)
+                return self.DEFAULT_CONFIG.copy()
+                
+            with open(self.config_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                
+            # 检查配置版本
+            version = config.get('version', 1)
+            if version < self.CURRENT_VERSION:
+                logger.info(f"配置版本过低(v{version})，开始迁移...")
+                config = self.migrate_config(config, version)
+                self.save(config)
+                
+            return config
+            
+        except Exception as e:
+            logger.error(f"加载配置失败: {str(e)}")
+            return self.DEFAULT_CONFIG.copy()
+            
+    def save(self, config: Dict[str, Any]) -> bool:
+        """保存配置。
+        
+        Args:
+            config: 配置字典
+            
+        Returns:
+            bool: 是否保存成功
+        """
+        try:
+            # 确保配置目录存在
+            self.config_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            # 保存配置
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=4, ensure_ascii=False)
+                
+            logger.info(f"配置已保存: {self.config_file}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"保存配置失败: {str(e)}")
+            return False
+            
+    def migrate_config(self, config: Dict[str, Any], from_version: int) -> Dict[str, Any]:
+        """迁移配置到最新版本。
+        
+        支持从任意旧版本迁移到最新版本。
+        
+        Args:
+            config: 旧配置
+            from_version: 当前版本
+            
+        Returns:
+            Dict[str, Any]: 迁移后的配置
+        """
+        # 版本1 -> 版本2
+        if from_version == 1:
+            config = self.migrate_v1_to_v2(config)
+            from_version = 2
+            
+        # 版本2 -> 版本3 (预留)
+        if from_version == 2:
+            # config = self.migrate_v2_to_v3(config)
+            # from_version = 3
+            pass
+            
+        return config
+        
+    def migrate_v1_to_v2(self, old_config: Dict[str, Any]) -> Dict[str, Any]:
+        """从v1迁移到v2。
+        
+        v1 -> v2的变更:
+        1. 重命名save_path为downloads
+        2. 统一Cookie管理结构
+        
+        Args:
+            old_config: v1配置
+            
+        Returns:
+            Dict[str, Any]: v2配置
+        """
+        new_config = {
+            'version': 2,
+            'downloads': old_config['save_path'],
+            'cookies': {
+                'twitter': old_config.get('twitter_cookie'),
+                'youtube': old_config.get('youtube_token')
+            }
+        }
+        
+        logger.info("配置从v1迁移到v2完成")
+        return new_config
+        
+    def get(self, key: str, default: Any = None) -> Any:
+        """获取配置项。
+        
+        Args:
+            key: 配置键
+            default: 默认值
+            
+        Returns:
+            Any: 配置值
+        """
+        return self.config.get(key, default)
+        
+    def set(self, key: str, value: Any) -> bool:
+        """设置配置项。
+        
+        Args:
+            key: 配置键
+            value: 配置值
+            
+        Returns:
+            bool: 是否设置成功
+        """
+        try:
+            self.config[key] = value
+            return self.save(self.config)
+        except Exception as e:
+            logger.error(f"设置配置失败: {str(e)}")
+            return False
+            
+    def reset(self) -> bool:
+        """重置为默认配置。
+        
+        Returns:
+            bool: 是否重置成功
+        """
+        try:
+            self.config = self.DEFAULT_CONFIG.copy()
+            return self.save(self.config)
+        except Exception as e:
+            logger.error(f"重置配置失败: {str(e)}")
+            return False 

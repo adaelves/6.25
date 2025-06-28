@@ -1,7 +1,8 @@
 """YouTube视频下载器模块。
 
 该模块负责从YouTube下载视频。
-支持4K/HDR和会员视频下载。
+支持会员视频下载和字幕下载。
+自动处理年龄限制和会员限制。
 """
 
 import os
@@ -10,12 +11,11 @@ import json
 from typing import Optional, Dict, Any, List, Callable
 from pathlib import Path
 import yt_dlp
-from datetime import datetime
-import time
-from tqdm import tqdm
+import requests
+from bs4 import BeautifulSoup
 
 from src.core.downloader import BaseDownloader
-from src.core.exceptions import DownloadError
+from src.core.exceptions import DownloadError, APIError
 from src.utils.cookie_manager import CookieManager
 from .config import YouTubeDownloaderConfig
 
@@ -24,41 +24,12 @@ logger = logging.getLogger(__name__)
 class YouTubeDownloader(BaseDownloader):
     """YouTube视频下载器。
     
-    支持以下功能：
-    - 4K/HDR视频下载
-    - 会员视频下载（需要Cookie）
-    - 智能码率选择
-    - 自动重试和恢复
+    支持会员视频下载和字幕下载。
+    自动处理年龄限制和会员限制。
     
     Attributes:
         config: YouTubeDownloaderConfig, 下载器配置
     """
-    
-    # 视频格式定义
-    FORMATS = {
-        '4k': {
-            'id': '4k',
-            'label': '2160p (4K)',
-            'format_id': 'bestvideo[height=2160][vcodec^=vp09]/bestvideo[height=2160]',
-            'requires_ffmpeg': True
-        },
-        'hdr': {
-            'id': 'hdr',
-            'label': 'HDR',
-            'format_id': 'bestvideo[vcodec^=vp09.2]/bestvideo[vcodec^=av01]',
-            'note': '需要HDR设备'
-        },
-        'member': {
-            'id': 'member',
-            'label': '会员视频',
-            'requires_cookie': True
-        },
-        '1080p': {
-            'id': '1080p',
-            'label': '1080p',
-            'format_id': 'bestvideo[height=1080]/bestvideo'
-        }
-    }
     
     def __init__(
         self,
@@ -80,199 +51,127 @@ class YouTubeDownloader(BaseDownloader):
             proxy=config.proxy,
             timeout=config.timeout,
             max_retries=config.max_retries,
-            cookie_manager=cookie_manager
+            cookie_manager=cookie_manager,
+            config=config
         )
-        self.config = config
+        
+        # 设置yt-dlp
         self._setup_yt_dlp()
+        
+        # 验证Cookie
+        if cookie_manager and cookie_manager.get_cookies("youtube"):
+            try:
+                self.check_cookie_valid()
+                logger.info("YouTube Cookie 验证成功")
+            except ValueError as e:
+                logger.warning(f"YouTube Cookie 验证失败: {str(e)}")
 
     def _setup_yt_dlp(self):
         """设置yt-dlp下载器。"""
-        self.ydl_opts = {
+        self.yt_dlp_opts = {
             # 基本配置
-            'format': self._get_format_string(),
-            'outtmpl': os.path.join(str(self.config.save_dir), self.config.output_template),
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'outtmpl': os.path.join(str(self.config.save_dir), '%(uploader)s/%(title)s-%(id)s.%(ext)s'),
             
-            # 网络设置
-            'proxy': self.config.proxy,
-            'socket_timeout': self.config.timeout,
-            'retries': self.config.max_retries,
-            'fragment_retries': self.config.max_retries,
-            
-            # 下载设置
+            # 提取设置
+            'extract_flat': False,
             'ignoreerrors': True,
             'no_warnings': True,
             'quiet': True,
-            'extract_flat': False,
+            
+            # 网络设置
+            'nocheckcertificate': True,
+            'proxy': self.config.proxy,
+            'socket_timeout': self.config.timeout,
+            'retries': self.config.max_retries,
             
             # 回调函数
             'progress_hooks': [self._progress_hook],
             'postprocessor_hooks': [self._postprocessor_hook],
             
+            # 字幕设置
+            'writesubtitles': True,
+            'writeautomaticsub': True,
+            'subtitleslangs': ['zh-Hans', 'en'],
+            'postprocessors': [{
+                'key': 'FFmpegEmbedSubtitle',
+                'already_have_subtitle': False,
+            }],
+            
             # 媒体处理设置
             'merge_output_format': 'mp4',
             'writethumbnail': True,
-            'writesubtitles': True,
-            'writeautomaticsub': True,
+            'embedthumbnail': True,
             
             # 元数据
             'add_metadata': True,
-            'embed_thumbnail': True,
-            'embed_subs': True,
+            'addmetadata': True,
             
-            # 高级设置
-            'concurrent_fragment_downloads': 5,
-            'http_chunk_size': 10485760,  # 10MB
-            
-            # 后处理器
-            'postprocessors': [{
-                'key': 'FFmpegMetadata',
-                'add_metadata': True,
-            }, {
-                'key': 'FFmpegVideoConvertor',
-                'preferedformat': 'mp4',
-            }]
+            # 年龄限制
+            'age_limit': 99,
         }
 
-        # 添加Cookie支持
+        # 添加Cookie文件
         if self.cookie_manager:
             cookie_file = self.cookie_manager.get_cookie_file("youtube")
             if os.path.exists(cookie_file):
-                self.ydl_opts['cookiefile'] = cookie_file
+                self.yt_dlp_opts['cookiefile'] = cookie_file
 
-    def _get_format_string(self) -> str:
-        """获取格式字符串。
-
-        根据配置和可用性生成格式字符串。
-
-        Returns:
-            str: 格式字符串
-        """
-        format_strings = []
+    def check_cookie_valid(self) -> bool:
+        """验证YouTube Cookie是否有效。
         
-        # 检查是否支持4K
-        if self.config.enable_4k:
-            format_strings.append(self.FORMATS['4k']['format_id'])
+        通过访问会员专属页面来验证Cookie是否有效。
+        
+        Returns:
+            bool: Cookie是否有效
             
-        # 检查是否支持HDR
-        if self.config.enable_hdr:
-            format_strings.append(self.FORMATS['hdr']['format_id'])
-            
-        # 添加默认1080p格式
-        format_strings.append(self.FORMATS['1080p']['format_id'])
-        
-        # 添加音频格式
-        format_strings.append('bestaudio[ext=m4a]/bestaudio')
-        
-        return '/'.join(format_strings)
-
-    def get_formats(self) -> List[Dict[str, Any]]:
-        """获取支持的格式列表。
-
-        Returns:
-            List[Dict[str, Any]]: 格式列表
-        """
-        return list(self.FORMATS.values())
-
-    def download(self, url: str) -> Dict[str, Any]:
-        """下载YouTube视频。
-
-        支持普通视频、会员视频、4K和HDR视频。
-
-        Args:
-            url: 视频URL
-
-        Returns:
-            Dict[str, Any]: 下载结果
-
         Raises:
-            DownloadError: 下载失败
+            ValueError: Cookie无效或已过期
         """
         try:
-            # 验证URL
-            if not self._validate_url(url):
-                raise DownloadError("不支持的URL格式")
+            # 获取Cookie
+            cookies = self.cookie_manager.get_cookies("youtube")
+            if not cookies:
+                raise ValueError("未找到YouTube Cookie")
                 
-            # 检查会员视频
-            if "membership" in url and not self.cookie_manager:
-                raise DownloadError("会员视频需要提供Cookie！")
-                
-            logger.info(f"开始下载视频: {url}")
+            # 构建请求头
+            headers = {
+                'User-Agent': (
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                    'AppleWebKit/537.36 (KHTML, like Gecko) '
+                    'Chrome/91.0.4472.124 Safari/537.36'
+                ),
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1'
+            }
             
-            # 获取视频信息
-            with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                if not info:
-                    raise DownloadError("无法获取视频信息")
-                    
-                # 检查是否为会员视频
-                if info.get('premium_only', False) and not self.cookie_manager:
-                    raise DownloadError("该视频仅限会员观看，请提供Cookie")
-                    
-                # 智能选择最佳格式
-                best_format = self._select_best_format(info)
-                if best_format:
-                    self.ydl_opts['format'] = best_format
-                    
-                # 下载视频
-                result = ydl.download([url])
-                if result != 0:
-                    raise DownloadError("下载失败")
-                    
-                return {
-                    'success': True,
-                    'url': url,
-                    'info': info,
-                    'format': best_format
-                }
-                
-        except Exception as e:
-            logger.error(f"下载失败: {str(e)}")
-            raise DownloadError(f"下载失败: {str(e)}")
-
-    def _select_best_format(self, info: Dict[str, Any]) -> str:
-        """智能选择最佳格式。
-
-        根据视频信息和系统配置选择最佳下载格式。
-
-        Args:
-            info: 视频信息
-
-        Returns:
-            str: 格式字符串
-        """
-        try:
-            formats = info.get('formats', [])
-            if not formats:
-                return self._get_format_string()
-                
-            # 检查是否有4K格式
-            has_4k = any(f.get('height', 0) == 2160 for f in formats)
-            if has_4k and self.config.enable_4k:
-                return self.FORMATS['4k']['format_id']
-                
-            # 检查是否有HDR格式
-            has_hdr = any('HDR' in f.get('vcodec', '') for f in formats)
-            if has_hdr and self.config.enable_hdr:
-                return self.FORMATS['hdr']['format_id']
-                
-            # 根据带宽选择合适的码率
-            if self.config.max_bitrate:
-                suitable_formats = [
-                    f for f in formats 
-                    if f.get('tbr', 0) <= self.config.max_bitrate
-                ]
-                if suitable_formats:
-                    best_format = max(
-                        suitable_formats,
-                        key=lambda x: (x.get('height', 0), x.get('tbr', 0))
-                    )
-                    return f"{best_format['format_id']}+bestaudio"
-                    
-            return self._get_format_string()
+            # 访问会员专属页面
+            test_url = "https://www.youtube.com/account"
+            response = requests.get(
+                test_url,
+                headers=headers,
+                cookies=cookies,
+                proxies={'http': self.proxy, 'https': self.proxy} if self.proxy else None,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
             
+            # 解析响应
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # 检查是否包含会员专享内容标识
+            if "会员专享" in response.text or "Premium" in response.text:
+                logger.info("YouTube Cookie 验证成功")
+                return True
+                
+            raise ValueError("Cookie无效或已过期")
+            
+        except requests.RequestException as e:
+            raise ValueError(f"验证Cookie时网络错误: {str(e)}")
         except Exception as e:
-            logger.warning(f"选择格式失败: {str(e)}")
-            return self._get_format_string()
+            raise ValueError(f"验证Cookie失败: {str(e)}")
 
     def _progress_hook(self, d: Dict[str, Any]):
         """下载进度回调。
@@ -299,28 +198,15 @@ class YouTubeDownloader(BaseDownloader):
                         desc += f" - 剩余{eta}秒"
                 
                 # 更新进度条
-                if not hasattr(self, '_pbar'):
-                    self._pbar = tqdm(total=100, desc=desc, unit='%')
-                self._pbar.n = int(progress * 100)
-                self._pbar.set_description(desc)
-                self._pbar.refresh()
-
-                # 调用进度回调
                 if self.progress_callback:
                     self.progress_callback(progress, desc)
 
             elif d['status'] == 'finished':
-                if hasattr(self, '_pbar'):
-                    self._pbar.close()
-                    delattr(self, '_pbar')
                 logger.info(f"下载完成: {d['filename']}")
                 if self.progress_callback:
                     self.progress_callback(1.0, "下载完成")
 
             elif d['status'] == 'error':
-                if hasattr(self, '_pbar'):
-                    self._pbar.close()
-                    delattr(self, '_pbar')
                 error_msg = f"下载出错: {d.get('error', '未知错误')}"
                 logger.error(error_msg)
                 if self.progress_callback:
@@ -371,3 +257,60 @@ class YouTubeDownloader(BaseDownloader):
             bool: 是否为有效的YouTube链接
         """
         return 'youtube.com' in url or 'youtu.be' in url
+
+    def download(self, url: str) -> Dict[str, Any]:
+        """下载YouTube视频。
+
+        支持以下URL类型:
+        - 单个视频
+        - 播放列表
+        - 频道视频
+        - 直播回放
+
+        Args:
+            url: YouTube URL
+
+        Returns:
+            Dict[str, Any]: 下载结果
+
+        Raises:
+            DownloadError: 下载失败
+        """
+        if not self._validate_url(url):
+            raise DownloadError(f"无效的YouTube URL: {url}")
+            
+        try:
+            # 验证Cookie
+            if self.cookie_manager and self.cookie_manager.get_cookies("youtube"):
+                self.check_cookie_valid()
+            
+            # 开始下载
+            with yt_dlp.YoutubeDL(self.yt_dlp_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                
+                # 处理下载结果
+                result = {
+                    'title': info.get('title', ''),
+                    'uploader': info.get('uploader', ''),
+                    'duration': info.get('duration', 0),
+                    'view_count': info.get('view_count', 0),
+                    'like_count': info.get('like_count', 0),
+                    'description': info.get('description', ''),
+                    'upload_date': info.get('upload_date', ''),
+                    'webpage_url': info.get('webpage_url', url),
+                }
+                
+                # 添加下载文件信息
+                if 'requested_downloads' in info:
+                    result['downloads'] = [{
+                        'path': d['filepath'],
+                        'format': d['format'],
+                        'filesize': d.get('filesize', 0),
+                        'ext': d['ext']
+                    } for d in info['requested_downloads']]
+                    
+                return result
+                
+        except Exception as e:
+            logger.error(f"下载失败: {str(e)}")
+            raise DownloadError(f"下载失败: {str(e)}")

@@ -17,11 +17,7 @@ class PornhubDownloaderConfig:
         timeout: 超时时间（秒）
         max_retries: 最大重试次数
         output_template: 输出文件名模板
-        max_height: 最大视频高度
-        min_height: 最小视频高度
-        prefer_quality: 首选视频质量
         merge_output_format: 视频合并输出格式
-        max_downloads: 每页最大下载数量
         cookies_file: Cookies 文件路径
     """
     
@@ -30,9 +26,5 @@ class PornhubDownloaderConfig:
     timeout: int = 30
     max_retries: int = 3
     output_template: str = "%(uploader)s/%(title)s-%(id)s.%(ext)s"
-    max_height: Optional[int] = 1080
-    min_height: Optional[int] = 480
-    prefer_quality: str = "1080p"
     merge_output_format: str = "mp4"
-    max_downloads: int = 50
     cookies_file: Optional[str] = None 

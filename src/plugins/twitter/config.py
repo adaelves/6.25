@@ -18,6 +18,7 @@ class TwitterDownloaderConfig:
         max_retries: 最大重试次数
         cookies_file: Cookie文件路径
         output_template: 输出文件名模板
+        max_items: 最大下载数量
     """
     
     save_dir: Path = Path("downloads/twitter")
@@ -26,6 +27,7 @@ class TwitterDownloaderConfig:
     max_retries: int = 5
     cookies_file: str = "config/twitter_cookies.txt"
     output_template: str = "%(uploader)s/%(upload_date)s-%(title)s-%(id)s.%(ext)s"
+    max_items: Optional[int] = None
     
     def __post_init__(self):
         """初始化后处理。"""
@@ -41,6 +43,7 @@ class TwitterDownloaderConfig:
             "max_retries": self.max_retries,
             "cookies_file": self.cookies_file,
             "output_template": self.output_template,
+            "max_items": self.max_items,
         }
         
     @classmethod

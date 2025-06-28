@@ -16,6 +16,7 @@ from tqdm import tqdm
 import re
 import requests
 from urllib.parse import urlparse
+import hashlib
 
 from src.core.downloader import BaseDownloader
 from src.core.exceptions import DownloadError, APIError
@@ -56,18 +57,24 @@ class TwitterDownloader(BaseDownloader):
             proxy=config.proxy,
             timeout=config.timeout,
             max_retries=config.max_retries,
-            cookie_manager=cookie_manager
+            cookie_manager=cookie_manager,
+            config=config
         )
-        self.config = config
+        
+        # 初始化API客户端
         self.api_client = TwitterAPIClient(
             cookie_manager=cookie_manager,
-            proxy=config.proxy
+            proxy=config.proxy,
+            timeout=config.timeout,
+            max_retries=config.max_retries
         )
+        
+        # 设置yt-dlp
         self._setup_yt_dlp()
 
     def _setup_yt_dlp(self):
         """设置yt-dlp下载器。"""
-        self.ydl_opts = {
+        self.yt_dlp_opts = {
             # 基本配置
             'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best/jpg/png',  # 添加图片格式支持
             'outtmpl': os.path.join(str(self.config.save_dir), self.config.output_template),
@@ -118,7 +125,7 @@ class TwitterDownloader(BaseDownloader):
         if self.cookie_manager:
             cookie_file = self.cookie_manager.get_cookie_file("twitter")
             if os.path.exists(cookie_file):
-                self.ydl_opts['cookiefile'] = cookie_file
+                self.yt_dlp_opts['cookiefile'] = cookie_file
 
     def _progress_hook(self, d: Dict[str, Any]):
         """下载进度回调。
@@ -445,7 +452,11 @@ class TwitterDownloader(BaseDownloader):
         
         try:
             if "/status/" in url:
-                return self._download_tweet(url)
+                raw_result = self._download_tweet(url)
+                if raw_result.get('media'):
+                    # 使用基类的去重功能
+                    raw_result['media'] = self._remove_duplicates(raw_result['media'])
+                return raw_result
             elif "/i/lists/" in url:
                 return self._download_list(url)
             else:
