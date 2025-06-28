@@ -1,13 +1,13 @@
 """Twitter视频下载器模块。
 
 该模块负责从Twitter下载视频和图片。
-支持认证和代理功能。
+支持API和浏览器混合下载模式。
 """
 
 import os
 import logging
 import json
-from typing import Optional, Dict, Any, List, Callable
+from typing import Optional, Dict, Any, List, Callable, Generator
 from pathlib import Path
 import yt_dlp
 from datetime import datetime
@@ -18,20 +18,22 @@ import requests
 from urllib.parse import urlparse
 
 from src.core.downloader import BaseDownloader
-from src.core.exceptions import DownloadError
+from src.core.exceptions import DownloadError, APIError
 from src.utils.cookie_manager import CookieManager
 from .config import TwitterDownloaderConfig
+from .api_client import TwitterAPIClient
 
 logger = logging.getLogger(__name__)
 
 class TwitterDownloader(BaseDownloader):
     """Twitter视频下载器。
     
-    使用yt-dlp从Twitter下载视频和图片。
-    支持认证和代理功能。
+    支持API和浏览器混合下载模式。
+    自动在API失败时降级到浏览器模拟。
     
     Attributes:
         config: TwitterDownloaderConfig, 下载器配置
+        api_client: TwitterAPIClient, API客户端
     """
     
     def __init__(
@@ -57,6 +59,10 @@ class TwitterDownloader(BaseDownloader):
             cookie_manager=cookie_manager
         )
         self.config = config
+        self.api_client = TwitterAPIClient(
+            cookie_manager=cookie_manager,
+            proxy=config.proxy
+        )
         self._setup_yt_dlp()
 
     def _setup_yt_dlp(self):
@@ -416,7 +422,42 @@ class TwitterDownloader(BaseDownloader):
             return None
 
     def download(self, url: str) -> Dict[str, Any]:
-        """下载单个推文中的媒体。
+        """下载Twitter内容。
+
+        支持以下URL类型:
+        - 单条推文: twitter.com/user/status/123
+        - 用户主页: twitter.com/user
+        - 列表页面: twitter.com/i/lists/123
+
+        Args:
+            url: Twitter URL
+
+        Returns:
+            Dict[str, Any]: 下载结果
+
+        Raises:
+            DownloadError: 下载失败
+        """
+        if not self._validate_url(url):
+            raise DownloadError(f"无效的Twitter URL: {url}")
+
+        url = self._normalize_url(url)
+        
+        try:
+            if "/status/" in url:
+                return self._download_tweet(url)
+            elif "/i/lists/" in url:
+                return self._download_list(url)
+            else:
+                return self._download_profile(url)
+        except Exception as e:
+            logger.error(f"下载失败: {str(e)}")
+            raise DownloadError(f"下载失败: {str(e)}")
+
+    def _download_tweet(self, url: str) -> Dict[str, Any]:
+        """下载单条推文。
+
+        优先使用API下载，失败时降级到浏览器模拟。
 
         Args:
             url: 推文URL
@@ -424,146 +465,131 @@ class TwitterDownloader(BaseDownloader):
         Returns:
             Dict[str, Any]: 下载结果
         """
+        tweet_id = self._extract_tweet_id(url)
+        
         try:
-            if not self._validate_url(url):
-                raise DownloadError("不支持的URL格式")
-                
-            logger.info(f"开始下载推文: {url}")
-            
-            # 规范化URL
-            url = self._normalize_url(url)
-            
-            # 首先尝试下载视频
-            try:
-                with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    if info and (info.get('formats') or info.get('entries')):
-                        result = ydl.download([url])
-                        if result == 0:
-                            return {
-                                'success': True,
-                                'media_count': 1,
-                                'url': url,
-                                'info': info
-                            }
-            except Exception as e:
-                logger.debug(f"视频下载失败，尝试下载图片: {str(e)}")
-            
-            # 如果视频下载失败，尝试下载图片
-            result = self._try_download_image_from_html(url)
-            if not result['success']:
-                raise DownloadError(result.get('message', '下载失败'))
-                
-            return result
-                    
-        except Exception as e:
-            logger.error(f"下载出错: {str(e)}")
-            return {
-                'success': False,
-                'message': str(e),
-                'url': url
-            }
+            # 优先尝试API下载
+            logger.info("尝试使用API下载...")
+            return self.api_client.download_tweet(tweet_id)
+        except APIError as e:
+            logger.info(f"API下载失败({str(e)})，降级到浏览器模拟...")
+            return self._browser_download_tweet(url)
 
-    def download_channel(self, url: str, max_count: Optional[int] = None) -> Dict[str, Any]:
-        """下载用户频道的所有媒体。
+    def _download_profile(self, profile_url: str) -> Dict[str, Any]:
+        """下载用户主页内容。
+
+        使用分页方式获取推文列表。
 
         Args:
-            url: 用户主页URL
-            max_count: 最大下载数量
+            profile_url: 用户主页URL
 
         Returns:
             Dict[str, Any]: 下载结果
         """
+        username = self._extract_username(profile_url)
+        results = []
+        
         try:
-            if not self._validate_url(url):
-                raise DownloadError("不支持的URL格式")
-                
-            # 检查是否为用户主页
-            if '/status/' in url:
-                raise DownloadError("该功能仅支持Twitter用户主页")
-                
-            logger.info(f"开始下载用户内容: {url}")
-            
-            # 规范化URL并添加media路径
-            url = f"{self._normalize_url(url)}/media"
-            
-            # 修改配置以支持频道下载
-            channel_opts = self.ydl_opts.copy()
-            channel_opts.update({
-                'extract_flat': False,
-                'playlistreverse': True,
-                'playlistend': max_count if max_count else None,
-                'playlist_items': f'1:{max_count}' if max_count else None,
-                'ignoreerrors': True,
-                'extractor_args': {
-                    'twitter': {
-                        'api': ['graphql'],
-                    }
-                }
-            })
-            
-            with yt_dlp.YoutubeDL(channel_opts) as ydl:
-                try:
-                    # 获取用户信息
-                    info = ydl.extract_info(url, download=False)
-                    if not info:
-                        raise DownloadError(f"无法获取用户信息: {url}")
+            # 优先尝试API
+            for page in self._api_get_tweets(username):
+                results.extend(self._process_tweet_page(page))
+                if self.config.max_items and len(results) >= self.config.max_items:
+                    break
+        except APIError:
+            # 降级到浏览器模拟
+            logger.info("API获取失败，降级到浏览器模拟...")
+            for page in self._browser_get_tweets(profile_url):
+                results.extend(self._process_tweet_page(page))
+                if self.config.max_items and len(results) >= self.config.max_items:
+                    break
+        
+        return {
+            "type": "profile",
+            "url": profile_url,
+            "items": results[:self.config.max_items] if self.config.max_items else results
+        }
+
+    def _process_tweet_page(self, tweets: List[Dict]) -> List[Dict]:
+        """处理一页推文。
+
+        Args:
+            tweets: 推文列表
+
+        Returns:
+            List[Dict]: 处理结果
+        """
+        results = []
+        for tweet in tweets:
+            try:
+                result = self._download_tweet(tweet["url"])
+                results.append(result)
+                # 简化的日志输出
+                logger.info(f"已下载: {tweet['url']}")
+            except Exception as e:
+                logger.warning(f"下载失败: {tweet['url']} - {str(e)}")
+        return results
+
+    def _api_get_tweets(self, username: str) -> Generator[List[Dict], None, None]:
+        """使用API获取推文列表。
+
+        Args:
+            username: 用户名
+
+        Yields:
+            List[Dict]: 一页推文
+        """
+        cursor = None
+        while True:
+            try:
+                page = self.api_client.get_user_tweets(
+                    username,
+                    cursor=cursor,
+                    count=20
+                )
+                if not page["tweets"]:
+                    break
                     
-                    # 获取要下载的媒体列表
-                    entries = info.get('entries', [])
-                    if not entries:
-                        raise DownloadError(f"未找到可下载的内容: {url}")
+                yield page["tweets"]
+                cursor = page.get("next_cursor")
+                if not cursor:
+                    break
+                    
+                # 简化的日志输出
+                logger.info(f"已获取{len(page['tweets'])}条推文")
+                
+            except APIError as e:
+                logger.error(f"API获取失败: {str(e)}")
+                break
+
+    def _browser_get_tweets(self, profile_url: str) -> Generator[List[Dict], None, None]:
+        """使用浏览器模拟获取推文列表。
+
+        Args:
+            profile_url: 用户主页URL
+
+        Yields:
+            List[Dict]: 一页推文
+        """
+        page_num = 1
+        while True:
+            try:
+                with self._get_browser_page() as page:
+                    tweets = self._extract_page_tweets(page, profile_url)
+                    if not tweets:
+                        break
                         
-                    # 限制下载数量
-                    if max_count:
-                        entries = entries[:max_count]
+                    yield tweets
                     
-                    # 下载所有媒体
-                    failed = []
-                    success_count = 0
+                    # 简化的日志输出
+                    logger.info(f"已获取第{page_num}页")
+                    page_num += 1
                     
-                    for entry in entries:
-                        try:
-                            video_url = entry.get('url') or entry.get('webpage_url')
-                            if not video_url:
-                                continue
-                                
-                            # 尝试下载
-                            result = self.download(video_url)
-                            if result['success']:
-                                success_count += result.get('media_count', 1)
-                            else:
-                                failed.append(video_url)
-                                
-                        except Exception as e:
-                            logger.error(f"下载媒体失败 {entry.get('url')}: {str(e)}")
-                            failed.append(entry.get('url'))
-                    
-                    # 返回下载结果
-                    return {
-                        'success': True,
-                        'media_count': success_count,
-                        'failed_count': len(failed),
-                        'failed_urls': failed,
-                        'url': url,
-                        'info': info
-                    }
-                    
-                except Exception as e:
-                    logger.error(f"下载用户内容失败 {url}: {str(e)}")
-                    return {
-                        'success': False,
-                        'message': str(e),
-                        'url': url
-                    }
-                    
-        except Exception as e:
-            logger.error(f"频道下载失败: {str(e)}")
-            return {
-                'success': False,
-                'message': str(e),
-                'url': url
-            }
+                    if not self._has_next_page(page):
+                        break
+                        
+            except Exception as e:
+                logger.error(f"浏览器获取失败: {str(e)}")
+                break
 
     def _normalize_url(self, url: str) -> str:
         """规范化Twitter URL。
