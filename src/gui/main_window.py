@@ -65,6 +65,11 @@ from src.plugins.pornhub.downloader import PornhubDownloader
 from src.plugins.pornhub.config import PornhubDownloaderConfig
 from src.core.exceptions import DownloadError
 from src.utils.config import ConfigManager
+from src.gui.dialogs.help_dialog import HelpDialog
+from src.gui.dialogs.settings_dialog import SettingsDialog
+from src.gui.dialogs.add_task_dialog import AddTaskDialog
+from src.core.download_scheduler import DownloadScheduler
+from src.core.exceptions import DownloaderError
 from .theme import ThemeManager, load_style
 from .download_dialog import DownloadDialog
 from .settings_dialog import SettingsDialog
