@@ -4,12 +4,18 @@
 """
 
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Enum, Text, Float, event
+from typing import Optional
+from sqlalchemy import (
+    Column, Integer, String, DateTime, 
+    Index, Text, BigInteger
+)
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from sqlalchemy.orm import validates
-from .base import Base
 
-class DownloadHistory(Base):
+from .base import Base
+from .mixins import TimestampMixin
+
+class DownloadHistory(Base, TimestampMixin):
     """下载历史记录。
     
     Attributes:
@@ -29,44 +35,59 @@ class DownloadHistory(Base):
     
     __tablename__ = 'download_history'
     
+    # 索引配置
+    __table_args__ = (
+        # 创建者ID和下载日期联合索引
+        Index('idx_creator_date', 'creator_id', 'created_at'),
+        # 状态索引（用于统计）
+        Index('idx_status', 'status'),
+    )
+    
     VALID_STATUSES = ('pending', 'downloading', 'success', 'failed')
     
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    url = Column(String(500), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    creator_id = Column(String(100), nullable=False, index=True)
+    
+    url = Column(String(500), nullable=False)
     title = Column(String(200))
-    platform = Column(String(50), index=True)
-    creator_id = Column(String(50), index=True)
-    
-    file_path = Column(String(500))
-    file_size = Column(Float)  # MB
-    duration = Column(Float)   # seconds
-    
+    platform = Column(String(50), nullable=False)
     status = Column(
-        Enum(*VALID_STATUSES, name='download_status'),
-        default='pending',
+        String(20),
         nullable=False,
-        index=True
+        default='pending'
     )
+    
+    file_path = Column(Text)
+    file_size = Column(BigInteger)
+    duration = Column(Integer)  # 秒
     error = Column(Text)
     
-    created_at = Column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False
-    )
-    updated_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow
-    )
+    @property
+    def is_successful(self) -> bool:
+        """是否下载成功。"""
+        return self.status == 'success'
     
-    @validates('status')
-    def validate_status(self, key, value):
-        """验证状态值。"""
-        if value not in self.VALID_STATUSES:
-            raise ValueError(f"Invalid status: {value}. Must be one of: {self.VALID_STATUSES}")
-        return value
+    @property
+    def has_error(self) -> bool:
+        """是否有错误。"""
+        return self.status == 'failed'
+    
+    def to_dict(self) -> dict:
+        """转换为字典。"""
+        return {
+            'id': self.id,
+            'url': self.url,
+            'title': self.title,
+            'platform': self.platform,
+            'creator_id': self.creator_id,
+            'file_path': self.file_path,
+            'file_size': self.file_size,
+            'duration': self.duration,
+            'status': self.status,
+            'error_message': self.error,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
     
     def __repr__(self):
         """返回字符串表示。"""
