@@ -30,31 +30,84 @@ logger = logging.getLogger(__name__)
 class DownloadDialog(QDialog):
     """下载配置对话框。
     
-    用于配置下载选项和选择下载格式。
-    支持视频质量选择和字幕下载设置。
-    
-    Signals:
-        options_selected: 当用户确认选项时发出
+    用于配置下载参数：
+    - 保存目录
+    - 最大下载视频数
     """
     
-    options_selected = Signal(dict)  # 下载选项信号
-    
-    def __init__(
-        self,
-        formats: Optional[List[Dict[str, Any]]] = None,
-        parent=None
-    ):
-        """初始化下载对话框。
+    def __init__(self, parent=None):
+        """初始化对话框。
         
         Args:
-            formats: 可用的下载格式列表
             parent: 父窗口
         """
         super().__init__(parent)
         
-        self.formats = formats or []
-        self._setup_ui()
+        self.setWindowTitle("下载配置")
+        self.setModal(True)
         
+        # 创建布局
+        layout = QVBoxLayout(self)
+        
+        # 保存目录选择
+        dir_layout = QHBoxLayout()
+        self.dir_input = QLineEdit()
+        self.dir_input.setPlaceholderText("选择保存目录")
+        self.dir_input.setText(str(Path.home() / "Downloads"))
+        self.browse_btn = QPushButton("浏览")
+        self.browse_btn.clicked.connect(self._browse_directory)
+        dir_layout.addWidget(QLabel("保存目录:"))
+        dir_layout.addWidget(self.dir_input)
+        dir_layout.addWidget(self.browse_btn)
+        layout.addLayout(dir_layout)
+        
+        # 最大视频数设置
+        max_videos_layout = QHBoxLayout()
+        self.max_videos_input = QSpinBox()
+        self.max_videos_input.setRange(0, 10000)
+        self.max_videos_input.setValue(0)
+        self.max_videos_input.setSpecialValueText("无限制")
+        max_videos_layout.addWidget(QLabel("最大视频数:"))
+        max_videos_layout.addWidget(self.max_videos_input)
+        layout.addLayout(max_videos_layout)
+        
+        # 按钮区域
+        button_layout = QHBoxLayout()
+        self.ok_btn = QPushButton("确定")
+        self.cancel_btn = QPushButton("取消")
+        self.ok_btn.clicked.connect(self.accept)
+        self.cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(self.ok_btn)
+        button_layout.addWidget(self.cancel_btn)
+        layout.addLayout(button_layout)
+        
+    def _browse_directory(self):
+        """浏览并选择保存目录。"""
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "选择保存目录",
+            self.dir_input.text(),
+            QFileDialog.ShowDirsOnly
+        )
+        if directory:
+            self.dir_input.setText(directory)
+            
+    def get_save_dir(self) -> str:
+        """获取保存目录。
+        
+        Returns:
+            str: 保存目录路径
+        """
+        return self.dir_input.text()
+        
+    def get_max_videos(self) -> int:
+        """获取最大视频数。
+        
+        Returns:
+            int: 最大视频数，0表示无限制
+        """
+        return self.max_videos_input.value()
+
     def _setup_ui(self):
         """设置用户界面。"""
         self.setWindowTitle("下载选项")
@@ -170,17 +223,6 @@ class DownloadDialog(QDialog):
                     userData=fmt.get("format_id")
                 )
                 
-    def _browse_directory(self):
-        """选择保存目录。"""
-        directory = QFileDialog.getExistingDirectory(
-            self,
-            "选择保存目录",
-            str(Path.home()),
-            QFileDialog.ShowDirsOnly
-        )
-        if directory:
-            self.save_path.setText(directory)
-            
     def get_options(self) -> Dict[str, Any]:
         """获取下载选项。
         
@@ -226,7 +268,7 @@ class DownloadDialog(QDialog):
         Returns:
             Optional[Dict[str, Any]]: 下载选项，如果用户取消则返回None
         """
-        dialog = cls(formats, parent)
+        dialog = cls(parent)
         if dialog.exec() == QDialog.Accepted:
             return dialog.get_options()
         return None 

@@ -7,7 +7,8 @@
 import os
 import logging
 import json
-from typing import Optional, Dict, Any, List, Callable
+import re
+from typing import Optional, Dict, Any, List, Callable, Generator
 from pathlib import Path
 import yt_dlp
 from datetime import datetime
@@ -15,9 +16,11 @@ import time
 from tqdm import tqdm
 import m3u8
 import requests
-from urllib.parse import urljoin, urlparse
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse, parse_qs, urlencode
+import asyncio
 
-from src.core.downloader import BaseDownloader
+from src.core.downloader import BaseDownloader, DownloadTask, DownloadStatus
 from src.core.exceptions import DownloadError
 from src.utils.cookie_manager import CookieManager
 from .config import PornhubDownloaderConfig
@@ -32,6 +35,7 @@ class PornhubDownloader(BaseDownloader):
     - 自动重试和恢复
     - 进度显示
     - 视频信息提取和存储
+    - 频道视频批量下载
     
     下载器实现了两种下载方式：
     1. 自定义m3u8下载器：专门处理m3u8流媒体
@@ -40,6 +44,14 @@ class PornhubDownloader(BaseDownloader):
     Attributes:
         config: PornhubDownloaderConfig, 下载器配置
     """
+    
+    # 基础URL
+    BASE_URL = "https://www.pornhub.com"
+    
+    # URL正则表达式
+    CHANNEL_URL_PATTERN = re.compile(
+        r"^https?://(?:www\.)?pornhub\.com/channels/[^/]+(?:/videos)?/?(?:\?.*)?$"
+    )
     
     def __init__(
         self,
@@ -601,3 +613,273 @@ class PornhubDownloader(BaseDownloader):
                 'failed': 0,
                 'videos': []
             }
+
+    def _validate_channel_url(self, url: str) -> bool:
+        """验证频道URL格式。
+        
+        Args:
+            url: 频道URL
+            
+        Returns:
+            bool: URL是否有效
+        """
+        return bool(self.CHANNEL_URL_PATTERN.match(url))
+        
+    def _normalize_channel_url(self, url: str) -> str:
+        """标准化频道URL。
+        
+        Args:
+            url: 原始URL
+            
+        Returns:
+            str: 标准化后的URL
+        """
+        # 确保URL以/videos结尾
+        if not url.endswith('/videos'):
+            url = url.rstrip('/') + '/videos'
+            
+        # 解析URL
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        
+        # 设置默认参数
+        query.update({
+            'o': ['mr'],  # 最近上传
+            't': ['a']    # 所有时间
+        })
+        
+        # 重建URL
+        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(query, doseq=True)}"
+        
+    def _extract_channel_info(self, soup: BeautifulSoup) -> Dict[str, Any]:
+        """提取频道信息。
+        
+        Args:
+            soup: BeautifulSoup对象
+            
+        Returns:
+            Dict[str, Any]: 频道信息
+        """
+        info = {
+            'title': '',
+            'description': '',
+            'subscriber_count': 0,
+            'video_count': 0
+        }
+        
+        try:
+            # 提取频道标题
+            title_elem = soup.find('h1', class_='channelsHeader')
+            if title_elem:
+                info['title'] = title_elem.get_text(strip=True)
+                
+            # 提取频道描述
+            desc_elem = soup.find('div', class_='descriptionContainer')
+            if desc_elem:
+                info['description'] = desc_elem.get_text(strip=True)
+                
+            # 提取订阅数
+            sub_elem = soup.find('span', class_='subsCount')
+            if sub_elem:
+                sub_text = sub_elem.get_text(strip=True)
+                info['subscriber_count'] = self._parse_count(sub_text)
+                
+            # 提取视频数
+            count_elem = soup.find('span', class_='videosCount')
+            if count_elem:
+                count_text = count_elem.get_text(strip=True)
+                info['video_count'] = self._parse_count(count_text)
+                
+        except Exception as e:
+            logger.warning(f"提取频道信息时出错: {e}")
+            
+        return info
+        
+    def _parse_count(self, text: str) -> int:
+        """解析数字文本。
+        
+        Args:
+            text: 数字文本(如"1.2K", "3.5M")
+            
+        Returns:
+            int: 实际数字
+        """
+        try:
+            text = text.strip().upper()
+            if 'K' in text:
+                return int(float(text.replace('K', '')) * 1000)
+            elif 'M' in text:
+                return int(float(text.replace('M', '')) * 1000000)
+            else:
+                return int(float(text))
+        except:
+            return 0
+            
+    def _get_channel_videos(self, url: str) -> Generator[str, None, None]:
+        """获取频道视频列表。
+        
+        Args:
+            url: 频道URL
+            
+        Yields:
+            str: 视频URL
+            
+        Raises:
+            DownloadError: 获取视频列表失败
+        """
+        page = 1
+        while True:
+            try:
+                # 构建页面URL
+                page_url = f"{url}&page={page}"
+                
+                # 获取页面内容
+                response = self.session.get(
+                    page_url,
+                    timeout=self.timeout
+                )
+                response.raise_for_status()
+                
+                # 解析页面
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # 提取视频链接
+                video_links = soup.find_all('a', class_='videoTitle')
+                if not video_links:
+                    break
+                    
+                # 生成视频URL
+                for link in video_links:
+                    video_url = urljoin(self.BASE_URL, link['href'])
+                    yield video_url
+                    
+                # 检查是否有下一页
+                next_button = soup.find('li', class_='page_next')
+                if not next_button or 'disabled' in next_button.get('class', []):
+                    break
+                    
+                page += 1
+                
+            except requests.RequestException as e:
+                raise DownloadError(
+                    f"获取频道视频列表失败: {str(e)}",
+                    "network",
+                    "请检查网络连接或重试",
+                    {
+                        "页码": page,
+                        "URL": page_url
+                    }
+                )
+            except Exception as e:
+                raise DownloadError(
+                    f"解析频道页面失败: {str(e)}",
+                    "format",
+                    "请检查URL是否正确",
+                    {
+                        "页码": page,
+                        "URL": page_url
+                    }
+                )
+                
+    async def download_channel(
+        self,
+        url: str,
+        max_videos: Optional[int] = None,
+        download_dir: Optional[Path] = None
+    ) -> Dict[str, Any]:
+        """下载频道视频。
+        
+        Args:
+            url: 频道URL
+            max_videos: 最大下载视频数，None表示无限制
+            download_dir: 下载目录，None使用默认目录
+            
+        Returns:
+            Dict[str, Any]: 下载结果统计
+            
+        Raises:
+            ValueError: URL无效
+            DownloadError: 下载失败
+        """
+        try:
+            # 验证URL
+            if not self._validate_channel_url(url):
+                raise ValueError(f"无效的频道URL: {url}")
+                
+            # 标准化URL
+            url = self._normalize_channel_url(url)
+            
+            # 获取频道信息
+            response = self.session.get(url, timeout=self.timeout)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+            channel_info = self._extract_channel_info(soup)
+            
+            # 设置下载目录
+            if download_dir:
+                original_dir = self.save_dir
+                self.save_dir = download_dir
+                
+            # 初始化统计信息
+            stats = {
+                'channel_info': channel_info,
+                'total_videos': 0,
+                'successful': 0,
+                'failed': 0,
+                'skipped': 0,
+                'errors': [],
+                'tasks': []
+            }
+            
+            try:
+                # 下载视频
+                for video_url in self._get_channel_videos(url):
+                    # 检查是否达到最大数量
+                    if max_videos and stats['total_videos'] >= max_videos:
+                        break
+                        
+                    stats['total_videos'] += 1
+                    
+                    try:
+                        # 异步下载视频
+                        task_id = await self.async_download(video_url)
+                        stats['tasks'].append(task_id)
+                        
+                        # 等待下载完成
+                        while True:
+                            task = self.get_download_status(task_id)
+                            if task.status == DownloadStatus.COMPLETED:
+                                stats['successful'] += 1
+                                break
+                            elif task.status == DownloadStatus.FAILED:
+                                stats['failed'] += 1
+                                if task.error:
+                                    stats['errors'].append(str(task.error))
+                                break
+                            elif task.status == DownloadStatus.CANCELED:
+                                stats['skipped'] += 1
+                                break
+                            await asyncio.sleep(1)
+                            
+                    except Exception as e:
+                        stats['failed'] += 1
+                        stats['errors'].append(str(e))
+                        logger.error(f"下载视频失败: {video_url} -> {e}")
+                        
+            finally:
+                # 恢复原始下载目录
+                if download_dir:
+                    self.save_dir = original_dir
+                    
+            return stats
+            
+        except Exception as e:
+            raise DownloadError(
+                f"下载频道失败: {str(e)}",
+                "channel",
+                "请检查频道URL是否正确",
+                {
+                    "URL": url,
+                    "错误": str(e)
+                }
+            )

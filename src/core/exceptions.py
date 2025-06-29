@@ -378,4 +378,238 @@ class YouTubeAgeRestrictedError(YouTubeError, AgeRestrictedError):
         YouTubeError.__init__(self, msg, code=code, **kwargs)
         self.min_age = min_age
         if min_age is not None:
-            self._append_message(f"minimum age={min_age}") 
+            self._append_message(f"minimum age={min_age}")
+
+class DownloaderError(Exception):
+    """下载器基础异常。"""
+    
+    def __init__(self, message: str, code: str = "E000"):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+            code: 错误代码
+        """
+        self.message = message
+        self.code = code
+        super().__init__(f"[{code}] {message}")
+
+class NetworkError(DownloaderError):
+    """网络错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E001")
+
+class AuthError(DownloaderError):
+    """认证错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E002")
+
+class ParseError(DownloaderError):
+    """解析错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E003")
+
+class DownloadError(DownloaderError):
+    """下载错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E004")
+
+class ConfigError(DownloaderError):
+    """配置错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E005")
+
+class CacheError(DownloaderError):
+    """缓存错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E006")
+
+class CookieError(DownloaderError):
+    """Cookie错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E007")
+
+class FileError(DownloaderError):
+    """文件错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E008")
+
+class ValidationError(DownloaderError):
+    """验证错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E009")
+
+class NotFoundError(DownloaderError):
+    """资源不存在错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E010")
+
+class PermissionError(DownloaderError):
+    """权限错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E011")
+
+class TimeoutError(DownloaderError):
+    """超时错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E012")
+
+class RetryError(DownloaderError):
+    """重试错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E013")
+
+class ConcurrencyError(DownloaderError):
+    """并发错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E014")
+
+class MemoryError(DownloaderError):
+    """内存错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E015")
+
+class DiskError(DownloaderError):
+    """磁盘错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E016")
+
+class SignatureError(DownloaderError):
+    """签名错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E017")
+
+class FormatError(DownloaderError):
+    """格式错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E018")
+
+class UnsupportedError(DownloaderError):
+    """不支持错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E019")
+
+class AbortError(DownloaderError):
+    """中止错误。"""
+    
+    def __init__(self, message: str):
+        """初始化异常。
+        
+        Args:
+            message: 错误信息
+        """
+        super().__init__(message, "E020") 

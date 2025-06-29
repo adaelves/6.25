@@ -45,7 +45,10 @@ from PySide6.QtWidgets import (
     QApplication,
     QSystemTrayIcon,
     QStyle,
-    QStyleFactory
+    QStyleFactory,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView
 )
 from PySide6.QtCore import Qt, Slot, Signal, QTimer, QThread, QSettings
 from PySide6.QtGui import QIcon, QPalette, QColor, QAction
@@ -65,6 +68,10 @@ from src.utils.config import ConfigManager
 from .theme import ThemeManager, load_style
 from .download_dialog import DownloadDialog
 from .settings_dialog import SettingsDialog
+from .help_dialog import HelpDialog
+from ..core.download_scheduler import DownloadScheduler
+from ..core.exceptions import DownloaderError
+from .dialogs.add_task_dialog import AddTaskDialog
 
 # 创建日志记录器
 logger = get_logger("gui")
@@ -356,517 +363,555 @@ class ThemeManager:
         self.switch_dark_mode(self.dark_mode)
 
 class MainWindow(QMainWindow):
-    """下载器主窗口。"""
+    """主窗口。
     
-    # 自定义信号
-    download_progress = Signal(float, str)  # 下载进度信号
-    log_message = Signal(str)  # 日志消息信号
+    提供以下功能：
+    1. 任务列表
+    2. 添加任务
+    3. 管理任务
+    4. 设置
+    5. 帮助
+    6. 系统托盘
     
-    def __init__(self):
-        super().__init__()
-        
-        # 初始化主题管理器
-        self.theme_manager = ThemeManager()
-        
-        # 初始化UI
-        self._setup_ui()
-        
-        # 创建菜单栏
-        self._create_menu_bar()
-        
-        # 设置日志处理
-        self._setup_logging()
-        
-        # 初始化代理设置
-        self.proxy = "http://127.0.0.1:7890"
-        
-        # 初始化cookie管理器
-        self.cookie_manager = CookieManager()
-        
-        # 连接信号和槽
-        self._connect_signals()
-        
-        # 初始化下载器
-        self._init_downloader()
-        
-        # 保存活动的下载线程
-        self.active_downloaders = []
-        
-        # 应用主题
-        self.theme_manager.apply_theme()
-        
-    def _create_menu_bar(self) -> None:
-        """创建菜单栏。"""
-        menubar = self.menuBar()
-        
-        # 文件菜单
-        file_menu = menubar.addMenu("文件")
-        exit_action = file_menu.addAction("退出")
-        exit_action.triggered.connect(self.close)
-        
-        # 账号菜单
-        account_menu = menubar.addMenu("账号")
-        
-        # Twitter账号管理
-        twitter_menu = account_menu.addMenu("Twitter")
-        twitter_auth_action = twitter_menu.addAction("账号管理")
-        twitter_auth_action.triggered.connect(
-            lambda: self._show_cookie_dialog("twitter")
-        )
-        
-        # YouTube账号管理
-        youtube_menu = account_menu.addMenu("YouTube")
-        youtube_auth_action = youtube_menu.addAction("账号管理")
-        youtube_auth_action.triggered.connect(
-            lambda: self._show_cookie_dialog("youtube")
-        )
-        
-        # Pornhub账号管理
-        pornhub_menu = account_menu.addMenu("Pornhub")
-        pornhub_auth_action = pornhub_menu.addAction("账号管理")
-        pornhub_auth_action.triggered.connect(
-            lambda: self._show_cookie_dialog("pornhub")
-        )
-        
-    def _show_cookie_dialog(self, platform: str) -> None:
-        """显示Cookie管理对话框。
+    Attributes:
+        scheduler: 下载调度器
+        settings: 配置信息
+    """
+    
+    def __init__(
+        self,
+        scheduler: DownloadScheduler,
+        settings: Dict[str, Any]
+    ):
+        """初始化主窗口。
         
         Args:
-            platform: 平台标识
+            scheduler: 下载调度器
+            settings: 配置信息
         """
-        dialog = CookieDialog(
-            platform=platform,
-            cookie_manager=self.cookie_manager,
-            parent=self
-        )
+        super().__init__()
         
-        if dialog.exec() == QDialog.Accepted:
-            # 如果是Twitter，重新初始化下载器
-            if platform == "twitter":
-                self._init_twitter_downloader()
-                
-            # 如果是YouTube，重新初始化下载器
-            elif platform == "youtube":
-                self._init_youtube_downloader()
-                
-            # 如果是Pornhub，重新初始化下载器
-            elif platform == "pornhub":
-                self._init_pornhub_downloader()
-                
-            logger.info(f"{platform.title()}认证信息已更新")
-            
-    def _init_twitter_downloader(self) -> None:
-        """初始化Twitter下载器。"""
-        try:
-            # 创建配置
-            config = TwitterDownloaderConfig(
-                save_dir=Path("downloads/twitter"),
-                proxy="http://127.0.0.1:7890",
-                timeout=30,
-                max_retries=5,
-                output_template="%(uploader)s/%(upload_date)s-%(title)s-%(id)s.%(ext)s"
-            )
-            
-            # 创建下载器
-            self.twitter_downloader = TwitterDownloader(
-                config=config,
-                progress_callback=lambda p, s: self.download_progress.emit(p, s),
-                cookie_manager=self.cookie_manager
-            )
-            
-            logger.info("Twitter下载器初始化成功")
-            
-        except Exception as e:
-            logger.error(f"Twitter下载器初始化失败: {str(e)}")
-            self.twitter_downloader = None
-            
-    def _init_youtube_downloader(self) -> None:
-        """初始化YouTube下载器。"""
-        try:
-            # 创建配置
-            config = YouTubeDownloaderConfig(
-                save_dir=Path("downloads/youtube"),
-                proxy="http://127.0.0.1:7890",
-                timeout=30,
-                max_retries=3,
-                merge_output_format="mp4",
-                output_template="%(uploader)s/%(title)s-%(id)s.%(ext)s"
-            )
-            
-            # 创建下载器
-            self.youtube_downloader = YouTubeDownloader(
-                config=config,
-                progress_callback=lambda p, s: self.download_progress.emit(p, s),
-                cookie_manager=self.cookie_manager
-            )
-            
-            logger.info("YouTube下载器初始化成功")
-            
-        except Exception as e:
-            logger.error(f"初始化YouTube下载器失败: {e}")
-            self.youtube_downloader = None
-            
-    def _init_pornhub_downloader(self) -> None:
-        """初始化Pornhub下载器。"""
-        try:
-            # 创建配置
-            config = PornhubDownloaderConfig(
-                save_dir=Path("downloads/pornhub"),
-                proxy="http://127.0.0.1:7890",
-                timeout=30,
-                max_retries=3,
-                merge_output_format="mp4",
-                output_template="%(uploader)s/%(title)s-%(id)s.%(ext)s"
-            )
-            
-            # 创建下载器
-            self.pornhub_downloader = PornhubDownloader(
-                config=config,
-                progress_callback=lambda p, s: self.download_progress.emit(float(p) / 100 if isinstance(p, (int, float)) else 0, str(s)),
-                cookie_manager=self.cookie_manager
-            )
-            
-            logger.info("Pornhub下载器初始化成功")
-            
-        except Exception as e:
-            logger.error(f"Pornhub下载器初始化失败: {str(e)}")
-            self.pornhub_downloader = None
-            
-    def _init_downloader(self) -> None:
-        """初始化下载器。"""
-        # 初始化下载器
-        self.twitter_downloader = None
-        self.youtube_downloader = None
-        self.pornhub_downloader = None
+        self.scheduler = scheduler
+        self.settings = settings
         
-        # 尝试初始化Twitter下载器
-        self._init_twitter_downloader()
-        
-        # 尝试初始化YouTube下载器
-        self._init_youtube_downloader()
-        
-        # 尝试初始化Pornhub下载器
-        self._init_pornhub_downloader()
-        
-    def _connect_signals(self) -> None:
-        """连接信号和槽。"""
-        # 下载按钮信号
-        self.download_btn.clicked.connect(self.start_download)
-        self.channel_download_btn.clicked.connect(self.start_channel_download)
-        self.cancel_btn.clicked.connect(self.cancel_download)
-        
-        # 进度信号
-        self.download_progress.connect(self.update_progress)
-        
-    def _setup_logging(self) -> None:
-        """设置日志处理。"""
-        # 创建自定义的日志处理器
-        class QTextEditHandler(logging.Handler):
-            def __init__(self, signal):
-                super().__init__()
-                self.signal = signal
-                
-            def emit(self, record):
-                msg = self.format(record)
-                self.signal.emit(msg)
-        
-        # 获取根日志记录器
-        root_logger = logging.getLogger()
-        
-        # 创建并添加自定义处理器
-        qt_handler = QTextEditHandler(self.log_message)
-        qt_handler.setFormatter(
-            logging.Formatter(
-                '[%(asctime)s] [%(levelname)s] %(message)s',
-                datefmt='%Y-%m-%d %H:%M:%S'
-            )
-        )
-        root_logger.addHandler(qt_handler)
-        
-    def _setup_ui(self) -> None:
-        """设置UI界面。"""
-        # 设置窗口标题和大小
+        # 设置窗口
         self.setWindowTitle("视频下载器")
-        self.resize(800, 600)
+        self.setMinimumSize(800, 600)
         
-        # 创建中央部件
+        # 创建界面
+        self._create_ui()
+        
+        # 创建托盘图标
+        self._create_tray_icon()
+        
+        # 创建定时器
+        self._create_timer()
+        
+    def _create_ui(self):
+        """创建界面。"""
+        # 创建中心部件
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
-        # 创建主布局
-        layout = QVBoxLayout(central_widget)
+        # 创建布局
+        layout = QVBoxLayout()
+        central_widget.setLayout(layout)
         
-        # 创建输入区域
-        input_layout = QHBoxLayout()
-        self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("请输入视频URL")
-        self.download_btn = QPushButton("下载")
-        self.channel_download_btn = QPushButton("下载频道")
-        self.cancel_btn = QPushButton("取消")
-        input_layout.addWidget(self.url_input)
-        input_layout.addWidget(self.download_btn)
-        input_layout.addWidget(self.channel_download_btn)
-        input_layout.addWidget(self.cancel_btn)
-        layout.addLayout(input_layout)
+        # 创建工具栏
+        toolbar = QHBoxLayout()
         
-        # 创建日志查看器
-        self.log_viewer = LogHandler()
-        layout.addWidget(self.log_viewer)
+        # 添加按钮
+        add_button = QPushButton("添加")
+        add_button.clicked.connect(self._add_task)
+        toolbar.addWidget(add_button)
         
-        # 创建进度条
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        layout.addWidget(self.progress_bar)
+        # 暂停/继续按钮
+        self.pause_button = QPushButton("暂停全部")
+        self.pause_button.clicked.connect(self._toggle_all)
+        toolbar.addWidget(self.pause_button)
+        
+        # 清除按钮
+        clear_button = QPushButton("清除已完成")
+        clear_button.clicked.connect(self._clear_completed)
+        toolbar.addWidget(clear_button)
+        
+        # 设置按钮
+        settings_button = QPushButton("设置")
+        settings_button.clicked.connect(self._show_settings)
+        toolbar.addWidget(settings_button)
+        
+        # 帮助按钮
+        help_button = QPushButton("帮助")
+        help_button.clicked.connect(self._show_help)
+        toolbar.addWidget(help_button)
+        
+        toolbar.addStretch()
+        
+        # 状态标签
+        self.status_label = QLabel()
+        toolbar.addWidget(self.status_label)
+        
+        layout.addLayout(toolbar)
+        
+        # 创建任务表格
+        self.task_table = QTableWidget()
+        self.task_table.setColumnCount(7)
+        self.task_table.setHorizontalHeaderLabels([
+            "ID",
+            "URL",
+            "状态",
+            "大小",
+            "进度",
+            "速度",
+            "剩余时间"
+        ])
+        
+        # 设置列宽
+        header = self.task_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        
+        # 设置右键菜单
+        self.task_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.task_table.customContextMenuRequested.connect(
+            self._show_context_menu
+        )
+        
+        layout.addWidget(self.task_table)
         
         # 创建状态栏
-        self.statusBar = QStatusBar()
-        self.setStatusBar(self.statusBar)
+        self.statusBar().showMessage("就绪")
         
-    @Slot()
-    def start_download(self) -> None:
-        """开始下载。"""
-        url = self.url_input.text().strip()
-        if not url:
-            QMessageBox.warning(self, "错误", "请输入视频URL")
-            return
-            
-        # 获取下载器
-        downloader = self._get_downloader(url)
-        if not downloader:
-            QMessageBox.warning(self, "错误", "不支持的URL格式")
-            return
-            
-        # 创建异步下载线程
-        thread = AsyncDownloader(
-            self._async_download(url),
-            parent=self
+    def _create_tray_icon(self):
+        """创建托盘图标。"""
+        # 创建托盘图标
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setIcon(
+            self.style().standardIcon(QStyle.SP_ComputerIcon)
         )
-        thread.finished.connect(self._handle_download_finished)
-        thread.error.connect(self._handle_download_error)
         
-        # 保存线程引用并启动
-        self.active_downloaders.append(thread)
-        thread.start()
+        # 创建托盘菜单
+        tray_menu = QMenu()
         
-        # 禁用下载按钮
-        self.download_btn.setEnabled(False)
-        self.channel_download_btn.setEnabled(False)
+        # 显示/隐藏
+        show_action = QAction("显示", self)
+        show_action.triggered.connect(self.show)
+        tray_menu.addAction(show_action)
         
-    @Slot()
-    def start_channel_download(self) -> None:
-        """开始下载频道/用户视频。"""
-        url = self.url_input.text().strip()
-        if not url:
-            QMessageBox.warning(self, "错误", "请输入频道/用户URL")
-            return
-            
-        # 获取下载器
-        downloader = self._get_downloader(url)
-        if not downloader:
-            QMessageBox.warning(self, "错误", "不支持的URL格式")
-            return
-            
-        # 创建异步下载线程
-        thread = AsyncDownloader(
-            self._async_download_user(url),
-            parent=self
-        )
-        thread.finished.connect(self._handle_channel_download_finished)
-        thread.error.connect(self._handle_download_error)
+        # 退出
+        quit_action = QAction("退出", self)
+        quit_action.triggered.connect(self.close)
+        tray_menu.addAction(quit_action)
         
-        # 保存线程引用并启动
-        self.active_downloaders.append(thread)
-        thread.start()
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.show()
         
-        # 禁用下载按钮
-        self.download_btn.setEnabled(False)
-        self.channel_download_btn.setEnabled(False)
+    def _create_timer(self):
+        """创建定时器。"""
+        # 创建更新定时器
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self._update_tasks)
+        self.update_timer.start(1000)  # 每秒更新一次
         
-    def _handle_download_finished(self, result: Dict[str, Any]) -> None:
-        """处理下载完成。
+    def _add_task(self):
+        """添加下载任务。"""
+        dialog = AddTaskDialog(self.settings, self)
+        dialog.task_added.connect(self._on_task_added)
+        dialog.exec()
+        
+    def _on_task_added(self, task_params: Dict[str, Any]):
+        """处理任务添加。
         
         Args:
-            result: 下载结果
-        """
-        # 清理完成的下载线程
-        self._cleanup_downloaders()
-        
-        # 启用下载按钮
-        self.download_btn.setEnabled(True)
-        self.channel_download_btn.setEnabled(True)
-        
-        # 重置进度条
-        self.progress_bar.setValue(0)
-        self.statusBar.showMessage("")
-        
-        # 显示结果
-        if result.get('success'):
-            QMessageBox.information(
-                self,
-                "下载完成",
-                f"视频下载成功: {result.get('url', '')}"
-            )
-        else:
-            QMessageBox.warning(
-                self,
-                "下载失败",
-                f"视频下载失败: {result.get('message', '未知错误')}"
-            )
-            
-    def _handle_channel_download_finished(self, result: Dict[str, Any]) -> None:
-        """处理频道下载完成。
-        
-        Args:
-            result: 下载结果
-        """
-        # 清理完成的下载线程
-        self._cleanup_downloaders()
-        
-        # 启用下载按钮
-        self.download_btn.setEnabled(True)
-        self.channel_download_btn.setEnabled(True)
-        
-        # 重置进度条
-        self.progress_bar.setValue(0)
-        self.statusBar.showMessage("")
-        
-        # 显示结果
-        if result.get('success'):
-            QMessageBox.information(
-                self,
-                "下载完成",
-                f"成功下载 {result.get('downloaded', 0)} 个视频，"
-                f"失败 {result.get('failed', 0)} 个"
-            )
-        else:
-            QMessageBox.warning(
-                self,
-                "下载失败",
-                f"频道下载失败: {result.get('message', '未知错误')}"
-            )
-            
-    def _handle_download_error(self, error: str) -> None:
-        """处理下载错误。
-        
-        Args:
-            error: 错误信息
-        """
-        # 清理完成的下载线程
-        self._cleanup_downloaders()
-        
-        # 启用下载按钮
-        self.download_btn.setEnabled(True)
-        self.channel_download_btn.setEnabled(True)
-        
-        # 重置进度条
-        self.progress_bar.setValue(0)
-        self.statusBar.showMessage("")
-        
-        # 显示错误
-        QMessageBox.warning(self, "下载失败", f"下载失败: {error}")
-        
-    def _cleanup_downloaders(self) -> None:
-        """清理已完成的下载线程。"""
-        self.active_downloaders = [
-            d for d in self.active_downloaders
-            if d.isRunning()
-        ]
-        
-    def _get_downloader(self, url: str) -> Optional[BaseDownloader]:
-        """获取适用的下载器。
-        
-        Args:
-            url: 视频URL
-            
-        Returns:
-            Optional[BaseDownloader]: 下载器实例
-        """
-        url = url.lower()
-        
-        if "twitter.com" in url:
-            return self.twitter_downloader
-        elif "youtube.com" in url or "youtu.be" in url:
-            return self.youtube_downloader
-        elif "pornhub.com" in url:
-            return self.pornhub_downloader
-            
-        return None
-        
-    async def _async_download(self, url: str) -> Dict[str, Any]:
-        """异步下载单个视频。
-        
-        Args:
-            url: 视频URL
-            
-        Returns:
-            Dict[str, Any]: 下载结果
-        """
-        downloader = self._get_downloader(url)
-        if not downloader:
-            return {
-                'success': False,
-                'message': "不支持的URL格式",
-                'url': url
-            }
-            
-        return await downloader.download(url)
-        
-    async def _async_download_user(self, url: str) -> Dict[str, Any]:
-        """异步下载用户/频道视频。
-        
-        Args:
-            url: 用户/频道URL
-            
-        Returns:
-            Dict[str, Any]: 下载结果
-        """
-        downloader = self._get_downloader(url)
-        if not downloader:
-            return {
-                'success': False,
-                'message': "不支持的URL格式",
-                'url': url
-            }
-            
-        return await downloader.download_user(url)
-        
-    @Slot()
-    def cancel_download(self) -> None:
-        """取消下载。"""
-        if hasattr(self, 'downloader'):
-            self.downloader.cancel()
-            logger.info("下载已取消")
-            
-    @Slot(float, str)
-    def update_progress(self, progress: float, status: str) -> None:
-        """更新进度条和状态。
-        
-        Args:
-            progress: 进度值（0-1）
-            status: 状态消息
+            task_params: 任务参数
         """
         try:
-            # 更新进度条
-            if progress is not None:
-                progress_value = int(progress * 100)
-                self.progress_bar.setValue(progress_value)
+            # 添加任务
+            task_id = self.scheduler.add_task(
+                task_params['url'],
+                task_params['save_dir'],
+                priority=task_params['priority'],
+                speed_limit=task_params['speed_limit']
+            )
             
-            # 更新状态栏
-            if status:
-                # 限制状态消息长度
-                status = status[:100] + '...' if len(status) > 100 else status
-                self.statusBar.showMessage(status)
-                
+            # 更新界面
+            self._update_tasks()
+            
+            # 显示提示
+            self.statusBar().showMessage(f"任务添加成功: {task_id}")
+            
         except Exception as e:
-            logger.error(f"更新进度失败: {str(e)}")
-
-    def _on_theme_changed(self, checked: bool):
-        """主题切换回调。
+            QMessageBox.warning(
+                self,
+                "错误",
+                f"添加任务失败: {str(e)}"
+            )
+            
+    def _toggle_all(self):
+        """暂停/继续所有任务。"""
+        if self.scheduler._paused:
+            self.scheduler.resume_all()
+            self.pause_button.setText("暂停全部")
+        else:
+            self.scheduler.pause_all()
+            self.pause_button.setText("继续全部")
+            
+    def _clear_completed(self):
+        """清除已完成任务。"""
+        # 确认清除
+        reply = QMessageBox.question(
+            self,
+            "确认清除",
+            "是否清除所有已完成的任务？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.No:
+            return
+            
+        try:
+            # 获取已完成任务
+            completed_tasks = list(self.scheduler._completed_tasks.values())
+            
+            # 清除任务
+            for task in completed_tasks:
+                self.scheduler._completed_tasks.pop(task.id)
+                
+            # 更新界面
+            self._update_tasks()
+            
+            # 显示提示
+            self.statusBar().showMessage(
+                f"已清除 {len(completed_tasks)} 个已完成任务"
+            )
+            
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "错误",
+                f"清除任务失败: {str(e)}"
+            )
+        
+    def _show_settings(self):
+        """显示设置对话框。"""
+        dialog = SettingsDialog(self.settings, self)
+        dialog.settings_changed.connect(self._on_settings_changed)
+        dialog.exec()
+        
+    def _show_help(self):
+        """显示帮助对话框。"""
+        dialog = HelpDialog(self)
+        dialog.exec()
+        
+    def _show_context_menu(self, pos):
+        """显示右键菜单。
         
         Args:
-            checked: 是否选中
+            pos: 菜单位置
         """
-        self.theme_manager.switch_dark_mode(checked)
+        # 获取选中的任务
+        row = self.task_table.rowAt(pos.y())
+        if row < 0:
+            return
+            
+        # 创建菜单
+        menu = QMenu()
+        
+        # 打开文件
+        open_action = QAction("打开文件", self)
+        open_action.triggered.connect(
+            lambda: self._open_file(row)
+        )
+        menu.addAction(open_action)
+        
+        # 打开目录
+        open_dir_action = QAction("打开目录", self)
+        open_dir_action.triggered.connect(
+            lambda: self._open_directory(row)
+        )
+        menu.addAction(open_dir_action)
+        
+        menu.addSeparator()
+        
+        # 暂停/继续
+        task_id = self.task_table.item(row, 0).text()
+        task = self.scheduler.get_task(task_id)
+        if task and task.status == "downloading":
+            pause_action = QAction("暂停", self)
+            pause_action.triggered.connect(
+                lambda: self._pause_task(row)
+            )
+            menu.addAction(pause_action)
+        elif task and task.status == "paused":
+            resume_action = QAction("继续", self)
+            resume_action.triggered.connect(
+                lambda: self._resume_task(row)
+            )
+            menu.addAction(resume_action)
+            
+        # 重试
+        if task and task.status == "failed":
+            retry_action = QAction("重试", self)
+            retry_action.triggered.connect(
+                lambda: self._retry_task(row)
+            )
+            menu.addAction(retry_action)
+            
+        menu.addSeparator()
+        
+        # 删除
+        delete_action = QAction("删除", self)
+        delete_action.triggered.connect(
+            lambda: self._delete_task(row)
+        )
+        menu.addAction(delete_action)
+        
+        # 显示菜单
+        menu.exec(self.task_table.viewport().mapToGlobal(pos))
+        
+    def _update_tasks(self):
+        """更新任务列表。"""
+        # 获取所有任务
+        tasks = (
+            list(self.scheduler._active_tasks.values()) +
+            list(self.scheduler._completed_tasks.values()) +
+            list(self.scheduler._failed_tasks.values())
+        )
+        
+        # 更新表格
+        self.task_table.setRowCount(len(tasks))
+        for i, task in enumerate(tasks):
+            # ID
+            id_item = QTableWidgetItem(task.id)
+            self.task_table.setItem(i, 0, id_item)
+            
+            # URL
+            url_item = QTableWidgetItem(task.url)
+            self.task_table.setItem(i, 1, url_item)
+            
+            # 状态
+            status_item = QTableWidgetItem(task.status)
+            self.task_table.setItem(i, 2, status_item)
+            
+            # 大小
+            size_item = QTableWidgetItem(
+                self._format_size(task.total_size)
+            )
+            self.task_table.setItem(i, 3, size_item)
+            
+            # 进度
+            progress = (
+                task.downloaded_size / task.total_size * 100
+                if task.total_size > 0 else 0
+            )
+            progress_item = QTableWidgetItem(f"{progress:.1f}%")
+            self.task_table.setItem(i, 4, progress_item)
+            
+            # 速度
+            speed_item = QTableWidgetItem(
+                self._format_speed(task.current_speed)
+            )
+            self.task_table.setItem(i, 5, speed_item)
+            
+            # 剩余时间
+            time_item = QTableWidgetItem(
+                str(task.remaining_time)
+                if task.remaining_time else "-"
+            )
+            self.task_table.setItem(i, 6, time_item)
+            
+        # 更新状态栏
+        stats = self.scheduler.get_stats()
+        self.status_label.setText(
+            f"任务: {stats['total_tasks']} "
+            f"活动: {stats['active_tasks']} "
+            f"完成: {stats['completed_tasks']} "
+            f"失败: {stats['failed_tasks']} "
+            f"速度: {self._format_speed(stats['current_speed'])}"
+        )
+        
+    def _format_size(self, size: int) -> str:
+        """格式化文件大小。
+        
+        Args:
+            size: 文件大小(bytes)
+            
+        Returns:
+            str: 格式化后的大小
+        """
+        if size < 1024:
+            return f"{size} B"
+        elif size < 1024 * 1024:
+            return f"{size/1024:.1f} KB"
+        elif size < 1024 * 1024 * 1024:
+            return f"{size/1024/1024:.1f} MB"
+        else:
+            return f"{size/1024/1024/1024:.1f} GB"
+            
+    def _format_speed(self, speed: int) -> str:
+        """格式化下载速度。
+        
+        Args:
+            speed: 下载速度(bytes/s)
+            
+        Returns:
+            str: 格式化后的速度
+        """
+        if speed < 1024:
+            return f"{speed} B/s"
+        elif speed < 1024 * 1024:
+            return f"{speed/1024:.1f} KB/s"
+        elif speed < 1024 * 1024 * 1024:
+            return f"{speed/1024/1024:.1f} MB/s"
+        else:
+            return f"{speed/1024/1024/1024:.1f} GB/s"
+            
+    def _open_file(self, row: int):
+        """打开文件。
+        
+        Args:
+            row: 行号
+        """
+        task_id = self.task_table.item(row, 0).text()
+        task = self.scheduler.get_task(task_id)
+        if task and task.save_path.exists():
+            os.startfile(task.save_path)
+            
+    def _open_directory(self, row: int):
+        """打开目录。
+        
+        Args:
+            row: 行号
+        """
+        task_id = self.task_table.item(row, 0).text()
+        task = self.scheduler.get_task(task_id)
+        if task and task.save_path.parent.exists():
+            os.startfile(task.save_path.parent)
+            
+    def _pause_task(self, row: int):
+        """暂停任务。
+        
+        Args:
+            row: 行号
+        """
+        task_id = self.task_table.item(row, 0).text()
+        self.scheduler.pause_task(task_id)
+        
+    def _resume_task(self, row: int):
+        """继续任务。
+        
+        Args:
+            row: 行号
+        """
+        task_id = self.task_table.item(row, 0).text()
+        self.scheduler.resume_task(task_id)
+        
+    def _retry_task(self, row: int):
+        """重试任务。
+        
+        Args:
+            row: 行号
+        """
+        task_id = self.task_table.item(row, 0).text()
+        task = self.scheduler.get_task(task_id)
+        if task:
+            self.scheduler.add_task(
+                task.url,
+                task.save_path,
+                priority=task.priority,
+                speed_limit=task.speed_limit,
+                chunk_size=task.chunk_size,
+                buffer_size=task.buffer_size,
+                retries=task.retries,
+                timeout=task.timeout,
+                headers=task.headers,
+                cookies=task.cookies
+            )
+            
+    def _delete_task(self, row: int):
+        """删除任务。
+        
+        Args:
+            row: 行号
+        """
+        task_id = self.task_table.item(row, 0).text()
+        task = self.scheduler.get_task(task_id)
+        
+        if task:
+            # 确认删除
+            reply = QMessageBox.question(
+                self,
+                "确认删除",
+                "是否同时删除已下载的文件？",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
+            )
+            
+            if reply == QMessageBox.Cancel:
+                return
+                
+            try:
+                # 取消任务
+                self.scheduler.cancel_task(task_id)
+                
+                # 删除文件
+                if reply == QMessageBox.Yes and task.save_path.exists():
+                    task.save_path.unlink()
+                    
+                # 从列表中移除
+                self.task_table.removeRow(row)
+                
+                # 显示提示
+                self.statusBar().showMessage(f"任务已删除: {task_id}")
+                
+            except Exception as e:
+                QMessageBox.warning(
+                    self,
+                    "错误",
+                    f"删除任务失败: {str(e)}"
+                )
+                
+    def _on_settings_changed(self, settings: Dict[str, Any]):
+        """处理设置变更。
+        
+        Args:
+            settings: 新的设置
+        """
+        self.settings = settings
+        
+        # 更新调度器配置
+        self.scheduler.max_concurrent = settings['max_concurrent']
+        self.scheduler.max_retries = settings['max_retries']
+        self.scheduler.default_timeout = settings['default_timeout']
+        
+        # 保存设置
+        settings_file = Path("config/settings.json")
+        settings_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(settings_file, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+            
+    def closeEvent(self, event):
+        """处理关闭事件。
+        
+        Args:
+            event: 关闭事件
+        """
+        if self.tray_icon.isVisible():
+            QMessageBox.information(
+                self,
+                "提示",
+                '程序将继续在后台运行。要退出程序，请右键点击托盘图标并选择"退出"。'
+            )
+            self.hide()
+            event.ignore()
+        else:
+            # 停止调度器
+            self.scheduler.stop()
+            event.accept()
 
 if __name__ == "__main__":
     import sys
