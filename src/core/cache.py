@@ -430,4 +430,11 @@ class SmartCache:
         return (
             key in self.memory_cache
             or key in self.disk_cache
-        ) 
+        )
+
+class Cache(SmartCache):
+    """缓存系统。
+    
+    SmartCache 的别名，用于向后兼容。
+    """
+    pass 

@@ -22,12 +22,12 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QDialogButtonBox,
     QFileDialog,
-    QTabWidget
+    QTabWidget,
+    QWidget
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QThread
 
-from src.utils.config import ConfigManager
-from src.gui.theme import ThemeManager
+from src.core.settings import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -47,20 +47,21 @@ class SettingsDialog(QDialog):
     theme_changed = Signal(str)
     language_changed = Signal(str)
     
-    def __init__(self, config: ConfigManager, theme_manager: ThemeManager, parent=None):
+    def __init__(self, settings: Settings, parent=None):
         """初始化设置对话框。
         
         Args:
-            config: 配置管理器实例
-            theme_manager: 主题管理器实例
+            settings: 设置管理器实例
             parent: 父窗口
         """
         super().__init__(parent)
         
-        self.config = config
-        self.theme_manager = theme_manager
+        self.settings = settings
         self._setup_ui()
         self._load_settings()
+        
+        # 创建保存线程
+        self.save_thread = None
         
     def _setup_ui(self):
         """设置用户界面。"""
@@ -133,6 +134,16 @@ class SettingsDialog(QDialog):
         self.proxy_edit.setPlaceholderText("http://127.0.0.1:7890")
         proxy_layout.addRow("代理地址:", self.proxy_edit)
         
+        # 添加代理测试按钮和状态标签
+        proxy_test_layout = QHBoxLayout()
+        self.proxy_test_btn = QPushButton("测试代理")
+        self.proxy_test_btn.clicked.connect(self._test_proxy)
+        self.proxy_test_status = QLabel()
+        proxy_test_layout.addWidget(self.proxy_test_btn)
+        proxy_test_layout.addWidget(self.proxy_test_status)
+        proxy_test_layout.addStretch()
+        proxy_layout.addRow("代理测试:", proxy_test_layout)
+        
         # 超时设置
         self.timeout_spin = QSpinBox()
         self.timeout_spin.setRange(10, 300)
@@ -163,27 +174,42 @@ class SettingsDialog(QDialog):
         
     def _load_settings(self):
         """加载当前设置。"""
-        settings = self.config.get_settings()
-        
         # 基本设置
-        self.save_path.setText(settings.get("download_dir", str(Path.home() / "Downloads")))
-        self.overwrite_check.setChecked(settings.get("allow_overwrite", False))
+        self.save_path.setText(
+            self.settings.get("download.save_dir")
+        )
+        self.overwrite_check.setChecked(
+            self.settings.get("download.overwrite", False)
+        )
         
         # 外观设置
-        theme = settings.get("theme", "明亮")
+        theme = "暗黑" if self.settings.get("ui.theme") == "dark" else "明亮"
         self.theme_combo.setCurrentText(theme)
         
-        language = settings.get("language", "中文")
+        language = (
+            "English"
+            if self.settings.get("ui.language") == "en_US"
+            else "中文"
+        )
         self.language_combo.setCurrentText(language)
         
         # 网络设置
-        proxy = settings.get("proxy", {})
-        self.proxy_check.setChecked(proxy.get("enabled", False))
-        self.proxy_edit.setText(proxy.get("url", ""))
+        self.proxy_check.setChecked(
+            self.settings.get("proxy.enabled", False)
+        )
+        self.proxy_edit.setText(
+            f"{self.settings.get('proxy.type', 'http')}://"
+            f"{self.settings.get('proxy.host', '127.0.0.1')}:"
+            f"{self.settings.get('proxy.port', 7890)}"
+        )
         self.proxy_edit.setEnabled(self.proxy_check.isChecked())
         
-        self.timeout_spin.setValue(settings.get("timeout", 30))
-        self.retry_spin.setValue(settings.get("max_retries", 3))
+        self.timeout_spin.setValue(
+            self.settings.get("download.timeout", 30)
+        )
+        self.retry_spin.setValue(
+            self.settings.get("download.max_retries", 3)
+        )
         
     def _browse_directory(self):
         """选择下载目录。"""
@@ -200,18 +226,22 @@ class SettingsDialog(QDialog):
         """主题改变处理。
         
         Args:
-            theme: 新的主题名称
+            theme: 主题名称
         """
-        self.theme_changed.emit(theme)
-            
+        self.theme_changed.emit(
+            "dark" if theme == "暗黑" else "light"
+        )
+        
     def _on_language_changed(self, language: str):
         """语言改变处理。
         
         Args:
-            language: 新的语言名称
+            language: 语言名称
         """
-        self.language_changed.emit(language)
-            
+        self.language_changed.emit(
+            "en_US" if language == "English" else "zh_CN"
+        )
+        
     def _on_proxy_toggled(self, enabled: bool):
         """代理开关处理。
         
@@ -220,54 +250,232 @@ class SettingsDialog(QDialog):
         """
         self.proxy_edit.setEnabled(enabled)
         
+    def _test_proxy(self):
+        """测试代理连接。"""
+        import requests
+        import threading
+        
+        def do_test():
+            try:
+                # 禁用按钮
+                self.proxy_test_btn.setEnabled(False)
+                self.proxy_test_status.setText("正在测试...")
+                
+                # 获取代理设置
+                proxy_enabled = self.proxy_check.isChecked()
+                if not proxy_enabled:
+                    self.proxy_test_status.setText("请先启用代理")
+                    self.proxy_test_btn.setEnabled(True)
+                    return
+                    
+                proxy_url = self.proxy_edit.text().strip()
+                if not proxy_url:
+                    self.proxy_test_status.setText("请输入代理地址")
+                    self.proxy_test_btn.setEnabled(True)
+                    return
+                    
+                # 解析代理地址
+                if "://" not in proxy_url:
+                    proxy_url = f"http://{proxy_url}"
+                    
+                proxies = {
+                    "http": proxy_url,
+                    "https": proxy_url
+                }
+                
+                # 测试连接
+                timeout = self.timeout_spin.value()
+                response = requests.get(
+                    "http://www.google.com",
+                    proxies=proxies,
+                    timeout=timeout
+                )
+                
+                if response.status_code == 200:
+                    self.proxy_test_status.setText("代理可用")
+                else:
+                    self.proxy_test_status.setText(f"代理响应异常: {response.status_code}")
+                    
+            except requests.exceptions.ProxyError as e:
+                self.proxy_test_status.setText("代理连接失败")
+                logger.error(f"代理测试失败: {e}")
+                
+            except requests.exceptions.ConnectionError as e:
+                self.proxy_test_status.setText("网络连接失败")
+                logger.error(f"代理测试失败: {e}")
+                
+            except requests.exceptions.Timeout as e:
+                self.proxy_test_status.setText("连接超时")
+                logger.error(f"代理测试失败: {e}")
+                
+            except Exception as e:
+                self.proxy_test_status.setText("测试失败")
+                logger.error(f"代理测试失败: {e}")
+                
+            finally:
+                # 启用按钮
+                self.proxy_test_btn.setEnabled(True)
+                
+        # 在新线程中执行测试
+        thread = threading.Thread(target=do_test)
+        thread.daemon = True
+        thread.start()
+        
     def get_settings(self) -> Dict[str, Any]:
-        """获取设置值。
+        """获取设置。
         
         Returns:
             Dict[str, Any]: 设置字典
         """
+        # 解析代理地址
+        proxy_url = self.proxy_edit.text().strip()
+        proxy_type = "http"
+        proxy_host = "127.0.0.1"
+        proxy_port = 7890
+        
+        if proxy_url:
+            try:
+                parts = proxy_url.split("://")
+                if len(parts) > 1:
+                    proxy_type = parts[0]
+                    addr = parts[1]
+                else:
+                    addr = parts[0]
+                    
+                host_port = addr.split(":")
+                proxy_host = host_port[0]
+                if len(host_port) > 1:
+                    proxy_port = int(host_port[1])
+            except Exception as e:
+                logger.warning(f"解析代理地址失败: {e}")
+        
         return {
-            "download_dir": self.save_path.text(),
-            "allow_overwrite": self.overwrite_check.isChecked(),
-            "theme": self.theme_combo.currentText(),
-            "language": self.language_combo.currentText(),
-            "proxy": {
-                "enabled": self.proxy_check.isChecked(),
-                "url": self.proxy_edit.text()
-            },
-            "timeout": self.timeout_spin.value(),
-            "max_retries": self.retry_spin.value()
+            # 下载设置
+            "download.save_dir": self.save_path.text(),
+            "download.overwrite": self.overwrite_check.isChecked(),
+            "download.timeout": self.timeout_spin.value(),
+            "download.max_retries": self.retry_spin.value(),
+            "download.max_concurrent": 3,  # 添加并发下载数
+            "download.chunk_size": 1024 * 1024,  # 1MB
+            "download.buffer_size": 1024 * 1024 * 10,  # 10MB
+            
+            # 界面设置
+            "ui.theme": "dark" if self.theme_combo.currentText() == "暗黑" else "light",
+            "ui.language": "en_US" if self.language_combo.currentText() == "English" else "zh_CN",
+            "ui.show_tray": True,
+            "ui.minimize_to_tray": True,
+            
+            # 代理设置
+            "proxy.enabled": self.proxy_check.isChecked(),
+            "proxy.type": proxy_type,
+            "proxy.host": proxy_host,
+            "proxy.port": proxy_port
         }
         
     def accept(self):
-        """确认对话框。"""
+        """确定按钮处理。"""
         try:
+            # 获取设置
             settings = self.get_settings()
-            self.config.update_settings(settings)
-            self.settings_changed.emit(settings)
-            logger.info("设置已更新")
-            super().accept()
+            
+            # 禁用按钮，防止重复点击
+            self.findChild(QDialogButtonBox).setEnabled(False)
+            
+            # 创建并启动保存线程
+            self.save_thread = SaveSettingsThread(self.settings, settings)
+            self.save_thread.finished.connect(self._on_save_finished)
+            self.save_thread.error.connect(self._on_save_error)
+            self.save_thread.start()
+            
         except Exception as e:
-            logger.error(f"保存设置时出错: {str(e)}")
+            logger.error(f"保存设置失败: {e}")
+            self.findChild(QDialogButtonBox).setEnabled(True)
+            
+    def _on_save_finished(self):
+        """设置保存完成处理。"""
+        try:
+            # 发出信号
+            if self.save_thread:
+                self.settings_changed.emit(self.save_thread.settings)
+            
+            # 清理线程
+            self.save_thread = None
+            
+            # 关闭对话框
+            super().accept()
+            
+        except Exception as e:
+            logger.error(f"保存设置完成处理失败: {e}")
+            self.findChild(QDialogButtonBox).setEnabled(True)
+            
+    def _on_save_error(self, error_msg: str):
+        """设置保存错误处理。
+        
+        Args:
+            error_msg: 错误信息
+        """
+        # 显示错误消息
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.critical(self, "错误", f"保存设置失败: {error_msg}")
+        
+        # 启用按钮
+        self.findChild(QDialogButtonBox).setEnabled(True)
+        
+        # 清理线程
+        self.save_thread = None
+
+class SaveSettingsThread(QThread):
+    """设置保存线程。
+    
+    用于异步保存设置，避免界面卡死。
+    
+    Signals:
+        error: 保存出错信号
+    """
+    
+    error = Signal(str)
+    
+    def __init__(self, settings_manager: Settings, settings: Dict[str, Any]):
+        """初始化保存线程。
+        
+        Args:
+            settings_manager: 设置管理器
+            settings: 要保存的设置
+        """
+        super().__init__()
+        self.settings_manager = settings_manager
+        self.settings = settings
+        
+    def run(self):
+        """运行线程。"""
+        try:
+            # 保存设置
+            for key, value in self.settings.items():
+                self.settings_manager.set(key, value)
+                
+            # 保存到文件
+            self.settings_manager.save()
+                
+        except Exception as e:
+            logger.error(f"保存设置失败: {e}")
+            self.error.emit(str(e))
             
     @classmethod
     def show_settings(
         cls,
-        config: ConfigManager,
-        theme_manager: ThemeManager,
+        settings: Settings,
         parent=None
     ) -> Optional[Dict[str, Any]]:
         """显示设置对话框。
         
         Args:
-            config: 配置管理器实例
-            theme_manager: 主题管理器实例
+            settings: 设置管理器实例
             parent: 父窗口
             
         Returns:
-            Optional[Dict[str, Any]]: 设置字典，如果用户取消则返回None
+            Optional[Dict[str, Any]]: 如果用户点击确定则返回设置字典，否则返回 None
         """
-        dialog = cls(config, theme_manager, parent)
+        dialog = cls(settings, parent)
         if dialog.exec() == QDialog.Accepted:
             return dialog.get_settings()
         return None 

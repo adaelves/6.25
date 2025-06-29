@@ -1,0 +1,44 @@
+{
+    "download": {
+        "save_dir": "C:\\Users\\Wang\\Downloads",
+        "max_concurrent": 3,
+        "chunk_size": 1048576,
+        "timeout": 30,
+        "max_retries": 3,
+        "auto_retry": true,
+        "overwrite": false,
+        "buffer_size": 10485760
+    },
+    "proxy": {
+        "enabled": true,
+        "type": "http",
+        "host": "127.0.0.1",
+        "port": 7890
+    },
+    "ui": {
+        "theme": "light",
+        "language": "zh_CN",
+        "font_size": 12,
+        "window_size": [
+            800,
+            600
+        ],
+        "window_position": [
+            100,
+            100
+        ],
+        "show_tray": true,
+        "minimize_to_tray": true
+    },
+    "platforms": {
+        "xvideos": {
+            "enabled": true,
+            "quality": "best"
+        },
+        "tumblr": {
+            "enabled": true,
+            "api_key": "",
+            "download_type": "all"
+        }
+    }
+}

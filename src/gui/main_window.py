@@ -77,6 +77,7 @@ from .help_dialog import HelpDialog
 from ..core.download_scheduler import DownloadScheduler
 from ..core.exceptions import DownloaderError
 from .dialogs.add_task_dialog import AddTaskDialog
+from src.core.settings import Settings
 
 # 创建日志记录器
 logger = get_logger("gui")
@@ -398,6 +399,7 @@ class MainWindow(QMainWindow):
         
         self.scheduler = scheduler
         self.settings = settings
+        self._force_quit = False  # 添加强制退出标志
         
         # 设置窗口
         self.setWindowTitle("视频下载器")
@@ -510,7 +512,7 @@ class MainWindow(QMainWindow):
         
         # 退出
         quit_action = QAction("退出", self)
-        quit_action.triggered.connect(self.close)
+        quit_action.triggered.connect(self._quit_application)  # 连接到新的退出方法
         tray_menu.addAction(quit_action)
         
         self.tray_icon.setContextMenu(tray_menu)
@@ -604,6 +606,14 @@ class MainWindow(QMainWindow):
         
     def _show_settings(self):
         """显示设置对话框。"""
+        # 确保使用Settings实例
+        if not isinstance(self.settings, Settings):
+            settings_manager = Settings()
+            # 将当前设置复制到Settings实例
+            for key, value in self.settings.items():
+                settings_manager.set(key, value)
+            self.settings = settings_manager
+            
         dialog = SettingsDialog(self.settings, self)
         dialog.settings_changed.connect(self._on_settings_changed)
         dialog.exec()
@@ -886,18 +896,37 @@ class MainWindow(QMainWindow):
         Args:
             settings: 新的设置
         """
-        self.settings = settings
-        
-        # 更新调度器配置
-        self.scheduler.max_concurrent = settings['max_concurrent']
-        self.scheduler.max_retries = settings['max_retries']
-        self.scheduler.default_timeout = settings['default_timeout']
-        
-        # 保存设置
-        settings_file = Path("config/settings.json")
-        settings_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(settings_file, "w", encoding="utf-8") as f:
-            json.dump(settings, f, ensure_ascii=False, indent=2)
+        try:
+            # 更新调度器配置
+            self.scheduler.max_concurrent = settings.get("download.max_concurrent", 3)
+            self.scheduler.max_retries = settings.get("download.max_retries", 3)
+            self.scheduler.default_timeout = settings.get("download.timeout", 30)
+            
+            # 更新本地设置
+            self.settings = settings
+            
+            # 保存设置
+            settings_file = Path("config/settings.json")
+            settings_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(settings_file, "w", encoding="utf-8") as f:
+                json.dump(settings, f, ensure_ascii=False, indent=2)
+                
+            # 显示提示
+            self.statusBar().showMessage("设置已保存")
+            
+        except Exception as e:
+            logger.error(f"保存设置失败: {e}")
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(
+                self,
+                "错误",
+                f"保存设置失败: {e}"
+            )
+            
+    def _quit_application(self):
+        """退出应用程序。"""
+        self._force_quit = True  # 设置强制退出标志
+        self.close()  # 触发关闭事件
             
     def closeEvent(self, event):
         """处理关闭事件。
@@ -905,7 +934,13 @@ class MainWindow(QMainWindow):
         Args:
             event: 关闭事件
         """
-        if self.tray_icon.isVisible():
+        if self._force_quit:
+            # 如果是强制退出，则停止调度器并接受关闭事件
+            logger.info("应用程序关闭")
+            self.scheduler.stop()
+            event.accept()
+        elif self.tray_icon.isVisible():
+            # 如果不是强制退出且托盘图标可见，则最小化到托盘
             QMessageBox.information(
                 self,
                 "提示",
@@ -914,7 +949,8 @@ class MainWindow(QMainWindow):
             self.hide()
             event.ignore()
         else:
-            # 停止调度器
+            # 其他情况下正常关闭
+            logger.info("应用程序关闭")
             self.scheduler.stop()
             event.accept()
 
