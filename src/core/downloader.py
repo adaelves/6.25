@@ -486,11 +486,23 @@ class BaseDownloader:
         
         # 配置重试策略
         retry_strategy = Retry(
-            total=self.max_retries,
-            backoff_factor=1,
-            status_forcelist=[500, 502, 503, 504]
+            total=10,  # 增加总重试次数
+            backoff_factor=2,  # 增加退避因子
+            status_forcelist=[408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 530],  # 增加需要重试的状态码
+            allowed_methods=["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE", "POST"],  # 允许所有方法重试
+            respect_retry_after_header=True,  # 遵循Retry-After头
+            remove_headers_on_redirect=["authorization"]  # 重定向时移除认证头
         )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
+        
+        # 创建适配器
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=20,  # 增加连接池大小
+            pool_maxsize=20,
+            pool_block=False
+        )
+        
+        # 配置适配器
         session.mount("http://", adapter)
         session.mount("https://", adapter)
         
@@ -511,9 +523,23 @@ class BaseDownloader:
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/91.0.4472.124 Safari/537.36"
-            )
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache"
         })
+        
+        # 禁用SSL验证
+        session.verify = False
         
         return session
         
@@ -612,22 +638,59 @@ class BaseDownloader:
             'no_warnings': True,
             'extract_flat': False,
             'progress_hooks': [self._yt_dlp_progress_hook],
-            'retries': self.max_retries,
-            'proxy': self.proxy,
+            'retries': 10,  # 增加重试次数
+            'fragment_retries': 10,  # 增加片段重试次数
+            'retry_sleep_functions': {
+                'http': lambda n: 5 * (2 ** (n - 1)),  # 指数退避
+                'fragment': lambda n: 5 * (2 ** (n - 1)),
+                'file_access': lambda n: 5 * (2 ** (n - 1))
+            },
             'socket_timeout': self.timeout,
-            'buffersize': self.buffer_size // 1024,  # yt-dlp使用KB为单位
+            'http_chunk_size': 1024 * 1024,  # 1MB
+            'buffersize': 1024 * 1024 * 10,  # 10MB
+            'external_downloader_args': ['--timeout', '30'],
+            
+            # 代理设置
+            'proxy': self.proxy,
+            'source_address': '0.0.0.0',  # 使用所有可用网络接口
+            
+            # SSL设置
+            'nocheckcertificate': True,  # 禁用证书验证
+            'legacy_server_connect': True,  # 使用旧版服务器连接
+            
+            # 下载设置
+            'concurrent_fragment_downloads': 5,  # 增加并发下载数
+            'file_access_retries': 10,  # 增加文件访问重试次数
+            'hls_prefer_native': True,  # 使用原生HLS下载器
+            'hls_split_discontinuity': True,  # 分割不连续点
+            
+            # 错误处理
+            'ignoreerrors': True,  # 忽略错误继续下载
+            'no_abort_on_error': True,  # 错误时不中止
+            'no_color': True,  # 禁用颜色输出
+            
+            # 限速设置
+            'ratelimit': 10000000,  # 限速10MB/s
+            'throttledratelimit': 5000000,  # 限速5MB/s
+            
+            # 其他设置
+            'prefer_ffmpeg': True,  # 优先使用ffmpeg
+            'keepvideo': True,  # 保留源视频
+            'writethumbnail': True,  # 下载缩略图
+            'writesubtitles': True,  # 下载字幕
+            'writeautomaticsub': True,  # 下载自动生成的字幕
+            'subtitleslangs': ['zh-CN', 'en'],  # 字幕语言
+            'postprocessors': [{
+                'key': 'FFmpegMetadata',
+                'add_metadata': True,
+            }]
         }
         
-        # 添加速度限制
-        if self.speed_limit:
-            # yt-dlp的速度限制单位是字节/秒
-            self.yt_dlp_opts['ratelimit'] = int(self.speed_limit)
-            
         # 添加Cookie
         cookies = self.cookie_manager.get_cookies(self.platform)
         if cookies:
             self.yt_dlp_opts['cookiefile'] = str(
-                self.cookie_manager.cookie_dir / f"{self.platform}.json"
+                self.cookie_manager.cookie_dir / f"{self.platform}.txt"
             )
             
     def _format_size(self, size: int) -> str:
@@ -743,27 +806,71 @@ class BaseDownloader:
             DownloadError: 处理后的错误
         """
         if isinstance(e, requests.ConnectionError):
-            return DownloadError(
-                "无法连接到服务器",
-                "network",
-                "请检查网络连接或代理设置",
-                {
-                    "原始错误": str(e),
-                    "代理设置": self.proxy or "未使用代理",
-                    "重试次数": self.max_retries
-                }
-            )
+            # 连接错误
+            error_msg = str(e)
+            if "Connection aborted" in error_msg:
+                return DownloadError(
+                    "连接被中断，可能是网络不稳定或防火墙拦截",
+                    "network",
+                    "请检查网络连接或尝试使用代理",
+                    {
+                        "原始错误": error_msg,
+                        "代理设置": self.proxy or "未使用代理",
+                        "重试次数": self.max_retries,
+                        "建议操作": [
+                            "检查网络连接是否稳定",
+                            "尝试使用代理服务器",
+                            "检查防火墙设置",
+                            "增加重试次数和超时时间"
+                        ]
+                    }
+                )
+            elif "Connection reset" in error_msg:
+                return DownloadError(
+                    "连接被重置，可能是服务器拒绝访问",
+                    "network",
+                    "请尝试使用代理或等待一段时间后重试",
+                    {
+                        "原始错误": error_msg,
+                        "代理设置": self.proxy or "未使用代理",
+                        "建议操作": [
+                            "使用代理服务器",
+                            "更换IP地址",
+                            "等待一段时间后重试",
+                            "检查是否触发反爬虫机制"
+                        ]
+                    }
+                )
+            else:
+                return DownloadError(
+                    "网络连接错误",
+                    "network",
+                    "请检查网络连接或代理设置",
+                    {
+                        "原始错误": error_msg,
+                        "代理设置": self.proxy or "未使用代理",
+                        "重试次数": self.max_retries
+                    }
+                )
         elif isinstance(e, requests.Timeout):
+            # 超时错误
             return DownloadError(
                 "请求超时",
                 "timeout",
                 "请检查网络状态或增加超时时间",
                 {
                     "超时时间": f"{self.timeout}秒",
-                    "代理设置": self.proxy or "未使用代理"
+                    "代理设置": self.proxy or "未使用代理",
+                    "建议操作": [
+                        "检查网络速度",
+                        "增加超时时间",
+                        "使用更稳定的网络",
+                        "尝试使用代理"
+                    ]
                 }
             )
         elif isinstance(e, requests.HTTPError):
+            # HTTP错误
             status_code = e.response.status_code if hasattr(e, 'response') else "未知"
             if status_code in [401, 403]:
                 return DownloadError(
@@ -772,7 +879,13 @@ class BaseDownloader:
                     "请检查登录状态或重新登录",
                     {
                         "状态码": status_code,
-                        "Cookie状态": bool(self.cookie_manager.get_cookies(self.platform))
+                        "Cookie状态": bool(self.cookie_manager.get_cookies(self.platform)),
+                        "建议操作": [
+                            "更新Cookie",
+                            "重新登录",
+                            "检查账号权限",
+                            "等待一段时间后重试"
+                        ]
                     }
                 )
             elif status_code == 404:
@@ -782,6 +895,21 @@ class BaseDownloader:
                     "请检查URL是否正确",
                     {"状态码": status_code}
                 )
+            elif status_code == 429:
+                return DownloadError(
+                    "请求过于频繁",
+                    "rate_limit",
+                    "请降低请求频率或等待一段时间",
+                    {
+                        "状态码": status_code,
+                        "建议操作": [
+                            "使用代理轮换",
+                            "增加请求间隔",
+                            "等待一段时间后重试",
+                            "减少并发下载数"
+                        ]
+                    }
+                )
             else:
                 return DownloadError(
                     f"HTTP错误: {status_code}",
@@ -790,11 +918,21 @@ class BaseDownloader:
                     {"状态码": status_code}
                 )
         else:
+            # 其他错误
             return DownloadError(
                 f"网络错误: {str(e)}",
                 "network",
                 "请检查网络连接",
-                {"原始错误": str(e)}
+                {
+                    "原始错误": str(e),
+                    "错误类型": e.__class__.__name__,
+                    "建议操作": [
+                        "检查网络连接",
+                        "检查代理设置",
+                        "等待后重试",
+                        "查看详细错误日志"
+                    ]
+                }
             )
 
     def _handle_file_error(self, e: Exception, path: Optional[Path] = None) -> DownloadError:

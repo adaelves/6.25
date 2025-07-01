@@ -3,7 +3,7 @@
 提供添加下载任务的界面。
 """
 
-from typing import Optional, Dict, Any
+from typing import Dict, Any, Optional
 from pathlib import Path
 from PySide6.QtWidgets import (
     QDialog,
@@ -50,6 +50,9 @@ class AddTaskDialog(QDialog):
         super().__init__(parent)
         
         self.settings = settings
+        self._url = ""
+        self._save_dir = ""
+        self._platform = ""
         
         self.setWindowTitle("添加下载任务")
         self.setMinimumWidth(500)
@@ -68,6 +71,11 @@ class AddTaskDialog(QDialog):
         self.url_edit = QLineEdit()
         self.url_edit.setPlaceholderText("请输入视频URL")
         form_layout.addRow("下载URL:", self.url_edit)
+        
+        # 平台选择
+        self.platform_combo = QComboBox()
+        self.platform_combo.addItems(["pornhub", "twitter"])
+        form_layout.addRow("平台:", self.platform_combo)
         
         # 保存目录
         save_dir_layout = QHBoxLayout()
@@ -131,8 +139,9 @@ class AddTaskDialog(QDialog):
     def _add_task(self):
         """添加下载任务。"""
         # 获取输入
-        url = self.url_edit.text().strip()
-        save_dir = self.save_dir_edit.text().strip()
+        self._url = self.url_edit.text().strip()
+        self._save_dir = self.save_dir_edit.text().strip()
+        self._platform = self.platform_combo.currentText()
         downloader = self.downloader_combo.currentText()
         priority = self.priority_spin.value()
         speed_limit = (
@@ -142,18 +151,19 @@ class AddTaskDialog(QDialog):
         )
         
         # 验证输入
-        if not url:
+        if not self._url:
             QMessageBox.warning(self, "错误", "请输入下载URL")
             return
             
-        if not save_dir:
+        if not self._save_dir:
             QMessageBox.warning(self, "错误", "请选择保存目录")
             return
             
         # 创建任务参数
         task_params = {
-            'url': url,
-            'save_dir': Path(save_dir),
+            'url': self._url,
+            'save_dir': Path(self._save_dir),
+            'platform': self._platform,
             'downloader': downloader,
             'priority': priority,
             'speed_limit': speed_limit
@@ -163,4 +173,19 @@ class AddTaskDialog(QDialog):
         self.task_added.emit(task_params)
         
         # 关闭对话框
-        self.accept() 
+        self.accept()
+        
+    def get_task_params(self) -> Dict[str, Any]:
+        """获取任务参数。
+        
+        Returns:
+            Dict[str, Any]: 任务参数字典，包含：
+                - url: 下载URL
+                - save_dir: 保存路径
+                - platform: 平台标识
+        """
+        return {
+            'url': self._url,
+            'save_dir': self._save_dir,
+            'platform': self._platform
+        } 

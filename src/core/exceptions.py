@@ -179,38 +179,51 @@ class BiliParseError(BiliError, ParseError):
     pass
 
 # 下载相关异常
-class DownloadError(PlatformError):
-    """下载错误基类。
-    
-    用于表示下载过程中的通用错误。
+class DownloadError(Exception):
+    """下载错误异常。
     
     Attributes:
-        url: str, 下载URL
-        progress: Optional[float], 下载进度（0-100）
+        message: str, 错误消息
+        error_type: str, 错误类型
+        suggestion: str, 建议操作
+        details: Dict[str, Any], 详细信息
     """
     
     def __init__(
         self,
-        platform: str,
-        msg: str,
-        url: str,
-        progress: Optional[Union[float, int]] = None,
-        **kwargs
+        message: str,
+        error_type: str = "unknown",
+        suggestion: str = "",
+        details: Optional[Dict[str, Any]] = None
     ):
         """初始化下载错误。
         
         Args:
-            platform: 平台标识
-            msg: 错误消息
-            url: 下载URL
-            progress: 下载进度（0-100）
-            **kwargs: 传递给父类的参数
+            message: 错误消息
+            error_type: 错误类型，默认为"unknown"
+            suggestion: 建议操作，默认为空字符串
+            details: 详细信息，默认为None
         """
-        super().__init__(platform, msg, **kwargs)
-        self.url = url
-        self.progress = float(progress) if progress is not None else None
-        if self.progress is not None:
-            self._append_message(f"progress={self.progress:.1f}%")
+        super().__init__(message)
+        self.message = message
+        self.error_type = error_type
+        self.suggestion = suggestion
+        self.details = details or {}
+        
+    def __str__(self) -> str:
+        """返回错误描述。
+        
+        Returns:
+            str: 格式化的错误描述
+        """
+        parts = [self.message]
+        if self.suggestion:
+            parts.append(f"建议: {self.suggestion}")
+        if self.details:
+            parts.append("详细信息:")
+            for key, value in self.details.items():
+                parts.append(f"  {key}: {value}")
+        return "\n".join(parts)
 
 class DownloadCanceled(DownloadError):
     """下载取消异常。
@@ -218,27 +231,16 @@ class DownloadCanceled(DownloadError):
     用于表示用户主动取消下载。
     """
     
-    def __init__(
-        self,
-        platform: str,
-        url: str,
-        progress: Optional[Union[float, int]] = None,
-        **kwargs
-    ):
+    def __init__(self, message: str = "下载已取消"):
         """初始化下载取消异常。
         
         Args:
-            platform: 平台标识
-            url: 下载URL
-            progress: 下载进度（0-100）
-            **kwargs: 传递给父类的参数
+            message: 错误消息，默认为"下载已取消"
         """
         super().__init__(
-            platform,
-            "Download canceled by user",
-            url,
-            progress=progress,
-            **kwargs
+            message=message,
+            error_type="canceled",
+            suggestion="这是用户主动取消的结果，不需要任何操作"
         )
 
 # 通用错误

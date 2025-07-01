@@ -12,166 +12,100 @@ from typing import Dict, Any, Optional
 logger = logging.getLogger(__name__)
 
 class Settings:
-    """设置管理器。
+    """配置管理。"""
     
-    管理应用程序的配置信息，包括：
-    1. 下载设置
-    2. 代理设置
-    3. 界面设置
-    4. 平台设置
-    """
-    
-    def __init__(self, config_file: str = "config.json"):
-        """初始化设置管理器。
+    def __init__(self):
+        """初始化配置。"""
+        self._config = {}
+        self._config_file = Path('config.json')
+        self._load()
+        
+    def get(self, key: str, default=None):
+        """获取配置。
         
         Args:
-            config_file: 配置文件路径，默认为"config.json"
-        """
-        self.config_file = Path(config_file)
-        
-        # 默认设置
-        self.defaults = {
-            # 下载设置
-            "download": {
-                "save_dir": str(Path.home() / "Downloads"),
-                "max_concurrent": 3,
-                "chunk_size": 1024 * 1024,  # 1MB
-                "timeout": 30,
-                "max_retries": 3,
-                "auto_retry": True
-            },
-            
-            # 代理设置
-            "proxy": {
-                "enabled": False,
-                "type": "http",
-                "host": "127.0.0.1",
-                "port": 7890
-            },
-            
-            # 界面设置
-            "ui": {
-                "theme": "light",
-                "language": "zh_CN",
-                "font_size": 12,
-                "window_size": [800, 600],
-                "window_position": [100, 100],
-                "show_tray": True,
-                "minimize_to_tray": True
-            },
-            
-            # 平台设置
-            "platforms": {
-                "xvideos": {
-                    "enabled": True,
-                    "quality": "best"
-                },
-                "tumblr": {
-                    "enabled": True,
-                    "api_key": "",
-                    "download_type": "all"  # all, video, photo
-                }
-            }
-        }
-        
-        # 加载设置
-        self.settings = self.load()
-        
-    def load(self) -> Dict[str, Any]:
-        """加载设置。
-        
-        Returns:
-            Dict[str, Any]: 设置字典
-        """
-        try:
-            # 如果配置文件存在则加载
-            if self.config_file.exists():
-                with open(self.config_file, "r", encoding="utf-8") as f:
-                    settings = json.load(f)
-                    
-                # 更新默认值
-                self._update_recursive(self.defaults, settings)
-                return self.defaults
-                
-        except Exception as e:
-            logger.error(f"加载设置失败: {e}")
-            
-        return self.defaults
-        
-    def save(self) -> bool:
-        """保存设置。
-        
-        Returns:
-            bool: 是否保存成功
-        """
-        try:
-            # 创建父目录
-            self.config_file.parent.mkdir(parents=True, exist_ok=True)
-            
-            # 保存设置
-            with open(self.config_file, "w", encoding="utf-8") as f:
-                json.dump(
-                    self.settings,
-                    f,
-                    ensure_ascii=False,
-                    indent=4
-                )
-            return True
-            
-        except Exception as e:
-            logger.error(f"保存设置失败: {e}")
-            return False
-            
-    def get(self, key: str, default: Any = None) -> Any:
-        """获取设置值。
-        
-        Args:
-            key: 设置键名，支持点号分隔的多级键名
+            key: 配置键
             default: 默认值
             
         Returns:
-            Any: 设置值
+            Any: 配置值
         """
-        try:
-            # 分割键名
-            keys = key.split(".")
-            value = self.settings
-            
-            # 逐级获取值
-            for k in keys:
-                value = value[k]
+        keys = key.split('.')
+        value = self._config
+        
+        for k in keys:
+            if not isinstance(value, dict):
+                return default
+            value = value.get(k)
+            if value is None:
+                return default
                 
-            return value
-            
-        except Exception:
-            return default
-            
-    def set(self, key: str, value: Any) -> bool:
-        """设置值。
+        return value
+        
+    def set(self, key: str, value):
+        """设置配置。
         
         Args:
-            key: 设置键名，支持点号分隔的多级键名
-            value: 设置值
+            key: 配置键
+            value: 配置值
+        """
+        keys = key.split('.')
+        config = self._config
+        
+        for k in keys[:-1]:
+            if k not in config:
+                config[k] = {}
+            elif not isinstance(config[k], dict):
+                config[k] = {}
+            config = config[k]
+            
+        config[keys[-1]] = value
+        self._save()
+        
+    def _load(self):
+        """加载配置。"""
+        try:
+            if self._config_file.exists():
+                with open(self._config_file, 'r', encoding='utf-8') as f:
+                    self._config = json.load(f)
+        except Exception as e:
+            logger.error(f"加载配置失败: {e}")
+            self._config = {}
+            
+    def _save(self):
+        """保存配置。"""
+        try:
+            with open(self._config_file, 'w', encoding='utf-8') as f:
+                json.dump(self._config, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"保存配置失败: {e}")
+            
+    def __getitem__(self, key: str):
+        """获取配置。
+        
+        Args:
+            key: 配置键
             
         Returns:
-            bool: 是否设置成功
+            Any: 配置值
+            
+        Raises:
+            KeyError: 配置不存在
         """
-        try:
-            # 分割键名
-            keys = key.split(".")
-            target = self.settings
-            
-            # 逐级设置值
-            for k in keys[:-1]:
-                target = target.setdefault(k, {})
-                
-            target[keys[-1]] = value
-            return True
-            
-        except Exception as e:
-            logger.error(f"设置值失败: {e}")
-            return False
-            
+        value = self.get(key)
+        if value is None:
+            raise KeyError(key)
+        return value
+        
+    def __setitem__(self, key: str, value):
+        """设置配置。
+        
+        Args:
+            key: 配置键
+            value: 配置值
+        """
+        self.set(key, value)
+
     def _update_recursive(
         self,
         target: Dict[str, Any],

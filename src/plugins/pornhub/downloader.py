@@ -19,6 +19,8 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode
 import asyncio
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from src.core.downloader import BaseDownloader, DownloadTask, DownloadStatus
 from src.core.exceptions import DownloadError
@@ -46,11 +48,11 @@ class PornhubDownloader(BaseDownloader):
     """
     
     # 基础URL
-    BASE_URL = "https://www.pornhub.com"
+    BASE_URL = "https://cn.pornhub.com"  # 使用中国区域的域名
     
     # URL正则表达式
     CHANNEL_URL_PATTERN = re.compile(
-        r"^https?://(?:www\.)?pornhub\.com/channels/[^/]+(?:/videos)?/?(?:\?.*)?$"
+        r"^https?://(?:cn\.)?pornhub\.com/channels/[^/]+(?:/videos)?/?(?:\?.*)?$"
     )
     
     def __init__(
@@ -70,71 +72,119 @@ class PornhubDownloader(BaseDownloader):
             platform="pornhub",
             save_dir=config.save_dir,
             progress_callback=progress_callback,
-            proxy=config.proxy,
-            timeout=config.timeout,
-            max_retries=config.max_retries,
+            proxy=config.proxy or "127.0.0.1:7890",
+            timeout=config.timeout or 60,
+            max_retries=config.max_retries or 5,
             cookie_manager=cookie_manager,
             config=config
         )
         
-        # 设置yt-dlp
-        self._setup_yt_dlp()
-
-    def _setup_yt_dlp(self):
-        """设置yt-dlp下载器。"""
+        self.config = config
+        
+        # 确保保存目录存在
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 设置yt-dlp配置
         self.yt_dlp_opts = {
-            # 基本配置
             'format': 'best',  # 选择最佳质量
-            'outtmpl': os.path.join(
-                str(self.save_dir),
-                '%(uploader)s',
-                '%(title)s-%(id)s.%(ext)s'
-            ),
-            
-            # 网络设置
-            'proxy': self.proxy,
-            'socket_timeout': self.timeout,
-            'retries': self.max_retries,
-            'fragment_retries': self.max_retries,
-            
-            # 下载设置
-            'ignoreerrors': True,
-            'no_warnings': True,
+            'paths': {
+                'home': str(self.save_dir),  # 设置主目录
+                'temp': str(self.save_dir / 'temp'),  # 临时文件目录
+            },
+            'outtmpl': {
+                'default': str(self.save_dir / '%(title)s.%(ext)s'),  # 默认输出模板
+                'chapter': str(self.save_dir / '%(title)s-%(section_number)s.%(ext)s'),  # 章节模板
+                'thumbnail': str(self.save_dir / 'thumbnails/%(title)s.%(ext)s'),  # 缩略图模板
+            },
             'quiet': True,
-            
-            # 回调函数
+            'no_warnings': True,
+            'extract_flat': False,
+            'retries': self.max_retries,
+            'socket_timeout': self.timeout,
+            'http_chunk_size': 1024 * 1024,  # 1MB
+            'buffersize': 1024 * 1024 * 10,  # 10MB
+            'proxy': f'http://{self.proxy}' if self.proxy else None,
+            'verify': False,
+            'nocheckcertificate': True,
             'progress_hooks': [self._progress_hook],
-            'postprocessor_hooks': [self._postprocessor_hook],
-            
-            # HLS下载设置
+            'concurrent_fragment_downloads': 3,
+            'fragment_retries': 10,
+            'retry_sleep_functions': {'fragment': lambda n: 1 + n * 2},
+            'extractor_retries': 3,
+            'file_access_retries': 3,
             'hls_prefer_native': True,
             'hls_split_discontinuity': True,
-            
-            # 自定义下载器
-            'downloader': {
-                'm3u8': self._m3u8_downloader
-            },
-            
-            # 元数据
-            'writeinfojson': True,
-            'writethumbnail': True,
-            
-            # 格式处理
-            'merge_output_format': 'mp4',
-            'postprocessors': [{
-                'key': 'FFmpegMetadata',
-                'add_metadata': True,
-            }, {
-                'key': 'FFmpegVideoConvertor',
-                'preferedformat': 'mp4',
-            }]
+            'external_downloader_args': ['--timeout', '60'],
         }
-
-        # 添加Cookie支持
-        if self.cookie_manager:
-            cookie_file = self.cookie_manager.get_cookie_file("pornhub")
-            if os.path.exists(cookie_file):
-                self.yt_dlp_opts['cookiefile'] = cookie_file
+        
+        # 添加Cookie
+        if cookie_manager:
+            cookies = cookie_manager.get_cookies("pornhub")
+            if cookies:
+                # 创建临时cookie文件
+                cookie_file = Path("temp_cookies.txt")
+                with open(cookie_file, "w") as f:
+                    for cookie in cookies:
+                        f.write(f"{cookie.domain}\tTRUE\t{cookie.path}\t"
+                               f"{'TRUE' if cookie.secure else 'FALSE'}\t0\t"
+                               f"{cookie.name}\t{cookie.value}\n")
+                self.yt_dlp_opts['cookiefile'] = str(cookie_file)
+            else:
+                # 如果没有特定的cookie，尝试使用默认的请求头
+                self.yt_dlp_opts['headers'] = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-us,en;q=0.5',
+                    'Sec-Fetch-Mode': 'navigate',
+                }
+                
+    def _create_session(self) -> requests.Session:
+        """创建HTTP会话。
+        
+        Returns:
+            requests.Session: 配置好的会话对象
+        """
+        session = super()._create_session()
+        
+        # 禁用SSL验证
+        session.verify = False
+        
+        # 设置重试策略
+        retry = Retry(
+            total=5,
+            backoff_factor=0.5,
+            status_forcelist=[500, 502, 503, 504, 429],
+            allowed_methods=["GET", "POST", "HEAD"]
+        )
+        
+        # 创建适配器
+        adapter = HTTPAdapter(
+            max_retries=retry,
+            pool_connections=10,
+            pool_maxsize=10,
+            pool_block=False
+        )
+        
+        # 配置适配器
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        
+        # 更新请求头
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Cache-Control": "max-age=0"
+        })
+        
+        return session
 
     def _m3u8_downloader(self, m3u8_url: str, info: Dict[str, Any]) -> str:
         """自定义m3u8下载器。
@@ -300,22 +350,14 @@ class PornhubDownloader(BaseDownloader):
             
         return filename
 
-    def download(self, url: str) -> Dict[str, Any]:
+    async def download(self, url: str) -> Dict[str, Any]:
         """下载视频。
-
-        该方法实现了两级下载策略：
-        1. 首先尝试使用自定义m3u8下载器
-        2. 如果m3u8下载失败，自动降级到yt-dlp下载器
 
         Args:
             url: 视频URL
 
         Returns:
-            Dict[str, Any]: 下载结果，包含：
-                - success: 是否成功
-                - url: 原始URL
-                - file_path: 下载文件路径（如果成功）
-                - info: 视频信息（元数据）
+            Dict[str, Any]: 下载结果信息
 
         Raises:
             DownloadError: 下载失败
@@ -324,55 +366,51 @@ class PornhubDownloader(BaseDownloader):
             # 验证URL
             if not self._validate_url(url):
                 raise DownloadError("不支持的URL格式")
-                
-            logger.info(f"开始下载视频: {url}")
-            
-            # 获取视频信息并下载
+
+            # 使用yt-dlp下载
             with yt_dlp.YoutubeDL(self.yt_dlp_opts) as ydl:
                 try:
-                    info = ydl.extract_info(url, download=False)
+                    # 提取视频信息
+                    info = await asyncio.get_event_loop().run_in_executor(
+                        None, 
+                        lambda: ydl.extract_info(url, download=False)
+                    )
+                    
                     if not info:
                         raise DownloadError("无法获取视频信息")
-                except yt_dlp.utils.DownloadError as e:
-                    raise DownloadError(f"获取视频信息失败: {str(e)}")
-                    
-                # 检查是否为m3u8流
-                if info.get('protocol') == 'm3u8' or info.get('protocol') == 'm3u8_native':
-                    # 使用自定义下载器
-                    try:
-                        file_path = self._m3u8_downloader(info['url'], info)
-                        return {
-                            'success': True,
-                            'url': url,
-                            'file_path': file_path,
-                            'info': info
-                        }
-                    except Exception as e:
-                        logger.error(f"m3u8下载失败，尝试使用默认下载器: {str(e)}")
-                        # 如果m3u8下载失败，尝试使用默认下载器
-                        result = ydl.download([url])
-                        return {
-                            'success': result == 0,
-                            'url': url,
-                            'info': info
-                        }
-                else:
-                    # 使用默认下载器
-                    result = ydl.download([url])
+
+                    # 下载视频
+                    await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: ydl.download([url])
+                    )
+
                     return {
-                        'success': result == 0,
+                        'success': True,
+                        'title': info.get('title', ''),
+                        'uploader': info.get('uploader', ''),
+                        'duration': info.get('duration', 0),
+                        'view_count': info.get('view_count', 0),
+                        'like_count': info.get('like_count', 0),
+                        'format': info.get('format', ''),
                         'url': url,
-                        'info': info
+                        'download_path': str(self.save_dir / f"{info.get('title', 'video')}.mp4")
                     }
-                    
+
+                except Exception as e:
+                    logger.error(f"yt-dlp下载失败: {str(e)}")
+                    # 如果yt-dlp失败，尝试使用m3u8下载器
+                    if 'm3u8' in str(e).lower() or 'hls' in str(e).lower():
+                        logger.info("尝试使用m3u8下载器")
+                        return await self._m3u8_downloader(url, info)
+                    raise DownloadError(str(e))
+
+        except DownloadError as e:
+            # 直接重新抛出 DownloadError
+            raise e
         except Exception as e:
-            error_msg = f"下载失败: {str(e)}"
-            logger.error(error_msg)
-            return {
-                'success': False,
-                'url': url,
-                'error': error_msg
-            }
+            logger.error(f"下载失败: {url} -> {str(e)}")
+            raise DownloadError(str(e))
 
     def _progress_hook(self, d: Dict[str, Any]):
         """下载进度回调。

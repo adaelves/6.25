@@ -4,7 +4,7 @@
   "download.max_concurrent": 3,
   "download.max_retries": 3,
   "download.overwrite": false,
-  "download.save_dir": "C:\\Users\\Wang\\Downloads",
+  "download.save_dir": "E:/test/Download",
   "download.timeout": 30,
   "proxy.enabled": true,
   "proxy.host": "127.0.0.1",

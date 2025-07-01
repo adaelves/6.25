@@ -5,6 +5,7 @@
 视频下载器主窗口模块。
 
 实现主要的GUI界面和交互逻辑。
+使用迅雷12风格的现代界面设计。
 """
 
 import sys
@@ -12,6 +13,7 @@ import os
 import asyncio
 from asyncio import AbstractEventLoop
 from concurrent.futures import ThreadPoolExecutor
+from enum import Enum, auto
 
 # 添加项目根目录到 Python 路径
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -48,10 +50,31 @@ from PySide6.QtWidgets import (
     QStyleFactory,
     QTableWidget,
     QTableWidgetItem,
-    QHeaderView
+    QHeaderView,
+    QFrame,
+    QStackedWidget,
+    QToolButton,
+    QSpinBox,
+    QCheckBox,
+    QButtonGroup,
+    QScrollArea,
+    QGridLayout,
+    QTabWidget,
+    QListWidget,
+    QListWidgetItem
 )
-from PySide6.QtCore import Qt, Slot, Signal, QTimer, QThread, QSettings
-from PySide6.QtGui import QIcon, QPalette, QColor, QAction
+from PySide6.QtCore import Qt, Slot, Signal, QTimer, QThread, QSettings, QSize, QPoint, QEvent, QObject
+from PySide6.QtGui import (
+    QIcon, 
+    QPalette, 
+    QColor, 
+    QAction,
+    QFont,
+    QPainter,
+    QPen,
+    QBrush,
+    QLinearGradient
+)
 
 from src.core.downloader import BaseDownloader
 from src.utils.logger import get_logger
@@ -78,12 +101,37 @@ from ..core.download_scheduler import DownloadScheduler
 from ..core.exceptions import DownloaderError
 from .dialogs.add_task_dialog import AddTaskDialog
 from src.core.settings import Settings
+from .widgets.download_list import DownloadList
+from .widgets.task_card import TaskCard
+from ..core.download_task import DownloadTask, TaskStatus
+from .creator_monitor import CreatorMonitorDialog
+from .settings_page import SettingsPage
+from .pages.downloading_page import DownloadingPage
+from .pages.completed_page import CompletedPage
+from .pages.recycle_page import RecyclePage
 
 # 创建日志记录器
 logger = get_logger("gui")
 
 class LogHandler(QTextEdit):
-    """日志处理器，将日志输出到QTextEdit。"""
+    """日志处理器，将日志输出到QTextEdit。
+    
+    支持不同级别日志的彩色显示：
+    - DEBUG: 灰色
+    - INFO: 黑色
+    - WARNING: 橙色
+    - ERROR: 红色
+    - CRITICAL: 深红色
+    """
+    
+    # 日志级别对应的颜色
+    COLORS = {
+        'DEBUG': '#808080',      # 灰色
+        'INFO': '#000000',       # 黑色
+        'WARNING': '#FFA500',    # 橙色
+        'ERROR': '#FF0000',      # 红色
+        'CRITICAL': '#8B0000'    # 深红色
+    }
     
     def __init__(self, parent: Optional[QWidget] = None):
         """初始化日志处理器。"""
@@ -91,17 +139,47 @@ class LogHandler(QTextEdit):
         self.setReadOnly(True)
         self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         
+        # 设置字体
+        font = self.font()
+        font.setFamily("Consolas")  # 使用等宽字体
+        self.setFont(font)
+        
     def append_log(self, text: str) -> None:
         """添加日志文本。
+        
+        支持解析日志级别并使用对应的颜色显示。
         
         Args:
             text: 日志文本
         """
-        self.append(text)
-        # 滚动到底部
-        self.verticalScrollBar().setValue(
-            self.verticalScrollBar().maximum()
-        )
+        try:
+            # 解析日志级别
+            level = 'INFO'  # 默认级别
+            for level_name in self.COLORS.keys():
+                if f'[{level_name}]' in text:
+                    level = level_name
+                    break
+            
+            # 设置颜色
+            color = self.COLORS.get(level, self.COLORS['INFO'])
+            formatted_text = f'<span style="color: {color};">{text}</span>'
+            
+            # 添加日志
+            self.append(formatted_text)
+            
+            # 滚动到底部
+            self.verticalScrollBar().setValue(
+                self.verticalScrollBar().maximum()
+            )
+            
+        except Exception as e:
+            # 如果解析失败，使用默认格式添加
+            super().append(text)
+            logger.error(f"格式化日志失败: {str(e)}")
+            
+    def clear_logs(self):
+        """清空日志。"""
+        self.clear()
 
 class AsyncDownloader(QThread):
     """异步下载线程。"""
@@ -145,6 +223,7 @@ class DownloadThread(QThread):
     
     处理单个下载任务的执行。
     支持进度更新和状态回调。
+    支持异步下载。
     
     Signals:
         progress_updated: 进度更新信号
@@ -180,6 +259,7 @@ class DownloadThread(QThread):
         self.url = url
         self.save_dir = save_dir
         self.progress_bar = progress_bar
+        self.loop = None
         
         # 暂停和取消标志
         self._paused = False
@@ -198,97 +278,163 @@ class DownloadThread(QThread):
         self._update_timer.start(100)  # 100ms更新一次
         
     def run(self):
-        """执行下载任务。"""
+        """运行下载线程。"""
         try:
+            # 创建事件循环
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+            
             # 设置进度回调
             self.downloader.progress_callback = self._progress_callback
             
-            # 开始下载
-            self.status_updated.emit("正在准备下载...")
-            result = self.downloader.download(self.url)
+            # 运行下载任务
+            result = self.loop.run_until_complete(
+                self.downloader.download(self.url)
+            )
             
-            if self._canceled:
-                self.status_updated.emit("下载已取消")
-                return
-                
+            # 发送完成信号
             self.download_finished.emit(result)
-            self.status_updated.emit("下载完成")
             
         except Exception as e:
             logger.error(f"下载失败: {str(e)}")
             self.download_error.emit(str(e))
-            self.status_updated.emit("下载失败")
             
         finally:
-            self._update_timer.stop()
-            
+            # 清理事件循环
+            if self.loop:
+                self.loop.close()
+                self.loop = None
+                
     def pause(self):
         """暂停下载。"""
-        if not self._paused:
-            self._paused = True
-            if self.progress_bar:
-                self.progress_bar.setEnabled(False)  # 冻结进度条
-            self.status_updated.emit("下载已暂停")
-            logger.info("下载已暂停")
-            
+        self._paused = True
+        self.status_updated.emit("已暂停")
+        
     def resume(self):
         """恢复下载。"""
-        if self._paused:
-            self._paused = False
-            if self.progress_bar:
-                self.progress_bar.setEnabled(True)  # 恢复进度条
-            self.status_updated.emit("正在下载...")
-            logger.info("下载已恢复")
-            
+        self._paused = False
+        self.status_updated.emit("正在下载")
+        
     def cancel(self):
         """取消下载。"""
         self._canceled = True
-        self.downloader.cancel()
-        self.status_updated.emit("正在取消...")
-        logger.info("下载已取消")
+        if self.downloader:
+            self.downloader.cancel()
+        self.status_updated.emit("已取消")
         
     def _progress_callback(self, progress: float, status: str):
         """进度回调函数。
         
         Args:
-            progress: 进度值(0-1)
+            progress: 进度值（0-1）
             status: 状态消息
         """
+        if self._canceled:
+            return
+            
         if self._paused:
             return
             
+        # 更新进度
         self.progress_updated.emit(progress, status)
         
-        # 解析状态消息
+        # 解析状态消息中的下载信息
         try:
-            if "下载中" in status:
-                parts = status.split(" - ")
-                self.current_file = parts[0].replace("下载中: ", "")
-                if len(parts) > 1:
-                    speed_part = parts[1]
-                    if "MB/s" in speed_part:
-                        self.download_speed = float(speed_part.replace("MB/s", ""))
-                if len(parts) > 2:
-                    eta_part = parts[2]
-                    if "剩余" in eta_part and "秒" in eta_part:
-                        self.eta = int(eta_part.replace("剩余", "").replace("秒", ""))
+            if "speed" in status:
+                speed_str = status.split("speed: ")[1].split("/s")[0]
+                self.download_speed = self._parse_speed(speed_str)
+                
+            if "ETA" in status:
+                eta_str = status.split("ETA: ")[1].split()[0]
+                self.eta = self._parse_time(eta_str)
+                
         except Exception:
             pass
             
+    def _parse_speed(self, speed_str: str) -> float:
+        """解析速度字符串。
+        
+        Args:
+            speed_str: 速度字符串（如 "1.2MB"）
+            
+        Returns:
+            float: 速度值（字节/秒）
+        """
+        try:
+            value = float(speed_str[:-2])
+            unit = speed_str[-2:]
+            multiplier = {
+                'B': 1,
+                'KB': 1024,
+                'MB': 1024 * 1024,
+                'GB': 1024 * 1024 * 1024
+            }.get(unit, 1)
+            return value * multiplier
+        except:
+            return 0
+            
+    def _parse_time(self, time_str: str) -> int:
+        """解析时间字符串。
+        
+        Args:
+            time_str: 时间字符串（如 "01:23"）
+            
+        Returns:
+            int: 秒数
+        """
+        try:
+            parts = time_str.split(":")
+            if len(parts) == 2:
+                return int(parts[0]) * 60 + int(parts[1])
+            elif len(parts) == 3:
+                return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+            return 0
+        except:
+            return 0
+            
     def _update_ui(self):
         """更新UI显示。"""
-        if not self._paused and self.progress_bar:
-            # 更新进度条文本
-            text_parts = []
-            if self.current_file:
-                text_parts.append(os.path.basename(self.current_file))
+        if self.progress_bar and not self._canceled:
+            # 更新进度条提示
             if self.download_speed > 0:
-                text_parts.append(f"{self.download_speed:.1f}MB/s")
-            if self.eta > 0:
-                text_parts.append(f"剩余{self.eta}秒")
-                
-            if text_parts:
-                self.progress_bar.setFormat("%p% - " + " - ".join(text_parts))
+                speed_str = self._format_speed(self.download_speed)
+                if self.eta > 0:
+                    self.progress_bar.setToolTip(
+                        f"下载速度: {speed_str}/s\n"
+                        f"剩余时间: {self._format_time(self.eta)}"
+                    )
+                else:
+                    self.progress_bar.setToolTip(f"下载速度: {speed_str}/s")
+                    
+    def _format_speed(self, speed: float) -> str:
+        """格式化速度值。
+        
+        Args:
+            speed: 速度值（字节/秒）
+            
+        Returns:
+            str: 格式化后的速度字符串
+        """
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if speed < 1024:
+                return f"{speed:.1f}{unit}"
+            speed /= 1024
+        return f"{speed:.1f}TB"
+        
+    def _format_time(self, seconds: int) -> str:
+        """格式化时间。
+        
+        Args:
+            seconds: 秒数
+            
+        Returns:
+            str: 格式化后的时间字符串
+        """
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes:02d}:{seconds:02d}"
 
 class ThemeManager:
     """主题管理器。
@@ -368,591 +514,1120 @@ class ThemeManager:
         """应用当前主题设置。"""
         self.switch_dark_mode(self.dark_mode)
 
-class MainWindow(QMainWindow):
-    """主窗口。
+class NavButton(QToolButton):
+    """自定义导航按钮。"""
     
-    提供以下功能：
-    1. 任务列表
-    2. 添加任务
-    3. 管理任务
-    4. 设置
-    5. 帮助
-    6. 系统托盘
-    
-    Attributes:
-        scheduler: 下载调度器
-        settings: 配置信息
-    """
-    
-    def __init__(
-        self,
-        scheduler: DownloadScheduler,
-        settings: Dict[str, Any]
-    ):
-        """初始化主窗口。
+    def __init__(self, text: str, icon_name: str = None, parent=None):
+        """初始化导航按钮。
         
         Args:
-            scheduler: 下载调度器
-            settings: 配置信息
+            text: 按钮文本
+            icon_name: 图标名称
+            parent: 父窗口
         """
+        super().__init__(parent)
+        self.setText(text)
+        if icon_name:
+            self.setIcon(QIcon(f":/icons/{icon_name}"))
+        self.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.setAutoRaise(True)
+        self.setCheckable(True)
+        self.setMinimumHeight(40)
+        self.setIconSize(QSize(20, 20))
+        
+        # 设置样式
+        self.setStyleSheet("""
+            QToolButton {
+                border: none;
+                padding: 5px 10px;
+                text-align: left;
+                font-size: 14px;
+            }
+            QToolButton:hover {
+                background-color: rgba(255, 255, 255, 0.1);
+            }
+            QToolButton:checked {
+                background-color: rgba(255, 255, 255, 0.2);
+                color: #1890ff;
+            }
+        """)
+
+class NavigationBar(QWidget):
+    """左侧导航栏。"""
+    
+    page_changed = Signal(int)
+    
+    def __init__(self, parent=None):
+        """初始化导航栏。"""
+        super().__init__(parent)
+        self.setFixedWidth(220)
+        self.setStyleSheet("""
+            NavigationBar {
+                background-color: white;
+                border-right: 1px solid #f0f0f0;
+            }
+        """)
+        
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # Logo区域
+        logo_widget = QWidget()
+        logo_widget.setFixedHeight(60)
+        logo_widget.setStyleSheet("""
+            QWidget {
+                background-color: white;
+                border-bottom: 1px solid #f0f0f0;
+            }
+        """)
+        
+        logo_layout = QHBoxLayout()
+        logo_layout.setContentsMargins(20, 0, 20, 0)
+        
+        logo = QLabel("视频下载器")
+        logo.setStyleSheet("""
+            QLabel {
+                color: #1f2329;
+                font-size: 18px;
+                font-weight: bold;
+            }
+        """)
+        logo_layout.addWidget(logo)
+        logo_widget.setLayout(logo_layout)
+        layout.addWidget(logo_widget)
+        
+        # 导航按钮
+        nav_widget = QWidget()
+        nav_layout = QVBoxLayout()
+        nav_layout.setContentsMargins(8, 16, 8, 16)
+        nav_layout.setSpacing(4)
+        
+        self.downloading_btn = self._create_nav_button("下载中", "downloading", True)
+        self.completed_btn = self._create_nav_button("已完成", "completed")
+        self.recycled_btn = self._create_nav_button("回收站", "recycled")
+        
+        nav_layout.addWidget(self.downloading_btn)
+        nav_layout.addWidget(self.completed_btn)
+        nav_layout.addWidget(self.recycled_btn)
+        nav_layout.addStretch()
+        
+        # 设置按钮
+        self.settings_btn = self._create_nav_button("设置", "settings")
+        nav_layout.addWidget(self.settings_btn)
+        
+        nav_widget.setLayout(nav_layout)
+        layout.addWidget(nav_widget)
+        
+        self.setLayout(layout)
+        
+        # 连接信号
+        self.downloading_btn.clicked.connect(lambda: self._switch_page(0))
+        self.completed_btn.clicked.connect(lambda: self._switch_page(1))
+        self.recycled_btn.clicked.connect(lambda: self._switch_page(2))
+        self.settings_btn.clicked.connect(lambda: self._switch_page(3))
+        
+    def _create_nav_button(self, text: str, icon_name: str, checked: bool = False) -> QPushButton:
+        """创建导航按钮。
+        
+        Args:
+            text: 按钮文本
+            icon_name: 图标名称
+            checked: 是否选中
+            
+        Returns:
+            QPushButton: 导航按钮
+        """
+        btn = QPushButton(text)
+        btn.setCheckable(True)
+        btn.setChecked(checked)
+        btn.setFixedHeight(40)
+        
+        # 设置图标
+        icon = QIcon(f"resources/icons/{icon_name}.svg")
+        btn.setIcon(icon)
+        btn.setIconSize(QSize(18, 18))
+        
+        # 设置样式
+        btn.setStyleSheet("""
+            QPushButton {
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                text-align: left;
+                font-size: 14px;
+                color: #4e5969;
+                background-color: transparent;
+            }
+            QPushButton:checked {
+                background-color: #e8f3ff;
+                color: #1890ff;
+                font-weight: 500;
+            }
+            QPushButton:hover:!checked {
+                background-color: #f2f3f5;
+                color: #1f2329;
+            }
+        """)
+        
+        return btn
+        
+    def _switch_page(self, index: int):
+        """切换页面。
+        
+        Args:
+            index: 页面索引
+        """
+        buttons = [
+            self.downloading_btn,
+            self.completed_btn,
+            self.recycled_btn,
+            self.settings_btn
+        ]
+        
+        for i, btn in enumerate(buttons):
+            btn.setChecked(i == index)
+            
+        self.page_changed.emit(index)
+
+class WindowButton(QPushButton):
+    """窗口控制按钮。"""
+    
+    def __init__(self, button_type: str, parent=None):
+        """初始化窗口按钮。
+        
+        Args:
+            button_type: 按钮类型(min/max/close)
+            parent: 父窗口
+        """
+        super().__init__(parent)
+        self.button_type = button_type
+        self.setFixedSize(46, 40)
+        self.setStyleSheet(self._get_style())
+        
+    def _get_style(self) -> str:
+        """获取按钮样式。"""
+        if self.button_type == "close":
+            return """
+                QPushButton {
+                    border: none;
+                    background-color: transparent;
+                }
+                QPushButton:hover {
+                    background-color: #ff4d4f;
+                }
+            """
+        else:
+            return """
+                QPushButton {
+                    border: none;
+                    background-color: transparent;
+                }
+                QPushButton:hover {
+                    background-color: rgba(0, 0, 0, 0.1);
+                }
+            """
+            
+    def paintEvent(self, event):
+        """绘制按钮图标。"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 设置画笔
+        pen = QPen(Qt.white if self.button_type == "close" and self.underMouse() else Qt.black)
+        pen.setWidth(1)
+        painter.setPen(pen)
+        
+        # 绘制图标
+        if self.button_type == "min":
+            painter.drawLine(18, 20, 28, 20)
+        elif self.button_type == "max":
+            painter.drawRect(18, 15, 10, 10)
+        elif self.button_type == "close":
+            painter.drawLine(18, 15, 28, 25)
+            painter.drawLine(28, 15, 18, 25)
+
+class TitleBar(QWidget):
+    """自定义标题栏。"""
+    
+    def __init__(self, parent=None):
+        """初始化标题栏。"""
+        super().__init__(parent)
+        self.setFixedHeight(50)
+        self.setStyleSheet("""
+            TitleBar {
+                background-color: white;
+                border-bottom: 1px solid #f0f0f0;
+            }
+        """)
+        
+        layout = QHBoxLayout()
+        layout.setContentsMargins(20, 0, 10, 0)
+        layout.setSpacing(10)
+        
+        # 标题
+        title = QLabel("视频下载器")
+        title.setStyleSheet("""
+            QLabel {
+                color: #1f2329;
+                font-size: 16px;
+                font-weight: 500;
+            }
+        """)
+        layout.addWidget(title)
+        layout.addStretch()
+        
+        # 窗口控制按钮
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(0)
+        
+        # 最小化按钮
+        min_btn = self._create_window_button("minimize")
+        min_btn.clicked.connect(self.window().showMinimized)
+        
+        # 最大化按钮
+        self.max_btn = self._create_window_button("maximize")
+        self.max_btn.clicked.connect(self._toggle_maximize)
+        
+        # 关闭按钮
+        close_btn = self._create_window_button("close")
+        close_btn.clicked.connect(self.window().close)
+        
+        btn_layout.addWidget(min_btn)
+        btn_layout.addWidget(self.max_btn)
+        btn_layout.addWidget(close_btn)
+        
+        layout.addLayout(btn_layout)
+        self.setLayout(layout)
+        
+    def _create_window_button(self, button_type: str) -> QPushButton:
+        """创建窗口控制按钮。
+        
+        Args:
+            button_type: 按钮类型(minimize/maximize/close)
+            
+        Returns:
+            QPushButton: 窗口控制按钮
+        """
+        btn = QPushButton()
+        btn.setFixedSize(46, 50)
+        
+        # 设置图标
+        icon = QIcon(f"resources/icons/{button_type}.svg")
+        btn.setIcon(icon)
+        btn.setIconSize(QSize(16, 16))
+        
+        # 设置样式
+        if button_type == "close":
+            btn.setStyleSheet("""
+                QPushButton {
+                    border: none;
+                    background-color: transparent;
+                }
+                QPushButton:hover {
+                    background-color: #ff4d4f;
+                }
+                QPushButton:hover QIcon {
+                    fill: white;
+                }
+            """)
+        else:
+            btn.setStyleSheet("""
+                QPushButton {
+                    border: none;
+                    background-color: transparent;
+                }
+                QPushButton:hover {
+                    background-color: #f5f6f7;
+                }
+            """)
+            
+        return btn
+        
+    def _toggle_maximize(self):
+        """切换最大化状态。"""
+        window = self.window()
+        if window.isMaximized():
+            window.showNormal()
+            self.max_btn.setIcon(QIcon("resources/icons/maximize.svg"))
+        else:
+            window.showMaximized()
+            self.max_btn.setIcon(QIcon("resources/icons/restore.svg"))
+            
+    def mousePressEvent(self, event):
+        """鼠标按下事件。"""
+        if event.button() == Qt.LeftButton:
+            self.window().drag_pos = event.globalPos() - self.window().pos()
+            event.accept()
+            
+    def mouseMoveEvent(self, event):
+        """鼠标移动事件。"""
+        if event.buttons() & Qt.LeftButton:
+            self.window().move(event.globalPos() - self.window().drag_pos)
+            event.accept()
+
+class MainWindow(QMainWindow):
+    """主窗口类
+    
+    采用现代化三栏布局:
+    - 左侧导航栏(220px): 显示主要功能入口
+    - 中间内容区: 显示下载任务列表
+    - 右侧信息栏(300px): 显示任务详情和设置
+    
+    设计特点:
+    - Material Design风格
+    - 自适应布局
+    - 完善的暗色主题支持
+    - 统一的视觉风格
+    """
+    
+    # Material Design 配色方案
+    COLORS = {
+        'primary': '#1976D2',      # 主色调
+        'primary_dark': '#1565C0', # 主色调暗色
+        'primary_light': '#42A5F5',# 主色调亮色
+        'accent': '#FF4081',       # 强调色
+        'warn': '#F44336',         # 警告色
+        'background': '#FAFAFA',   # 背景色
+        'surface': '#FFFFFF',      # 表面色
+        'on_primary': '#FFFFFF',   # 主色调上的文字
+        'on_surface': '#000000',   # 表面上的文字
+        'divider': '#E0E0E0',      # 分隔线
+        
+        # 暗色主题
+        'dark': {
+            'background': '#121212',
+            'surface': '#1E1E1E',
+            'primary': '#90CAF9',
+            'on_surface': '#FFFFFF',
+            'divider': '#2D2D2D'
+        }
+    }
+    
+    def __init__(self, scheduler=None, settings=None):
         super().__init__()
+        self.settings = settings or Settings()
+        self.scheduler = scheduler or DownloadScheduler(self.settings)
         
-        self.scheduler = scheduler
-        self.settings = settings
-        self._force_quit = False  # 添加强制退出标志
+        # 初始化界面
+        self._setup_ui()
+        self._setup_styles()
+        self._connect_signals()
         
-        # 设置窗口
+        # 创建定时器更新速度显示
+        self._setup_speed_timer()
+        
+        # 恢复窗口状态
+        self._restore_window_state()
+        
+    def _setup_ui(self):
+        """创建界面布局"""
+        # 设置窗口基本属性
         self.setWindowTitle("视频下载器")
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(1200, 800)
         
-        # 创建界面
-        self._create_ui()
-        
-        # 创建托盘图标
-        self._create_tray_icon()
-        
-        # 创建定时器
-        self._create_timer()
-        
-    def _create_ui(self):
-        """创建界面。"""
-        # 创建中心部件
+        # 创建主窗口部件
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
-        # 创建布局
-        layout = QVBoxLayout()
-        central_widget.setLayout(layout)
+        # 主布局(水平布局,包含三栏)
+        main_layout = QHBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
         
-        # 创建工具栏
-        toolbar = QHBoxLayout()
+        # 左侧导航栏
+        self.nav_bar = self._create_nav_bar()
+        main_layout.addWidget(self.nav_bar)
         
-        # 添加按钮
-        add_button = QPushButton("添加")
-        add_button.clicked.connect(self._add_task)
-        toolbar.addWidget(add_button)
+        # 中间内容区
+        self.content_area = self._create_content_area()
+        main_layout.addWidget(self.content_area)
         
-        # 暂停/继续按钮
-        self.pause_button = QPushButton("暂停全部")
-        self.pause_button.clicked.connect(self._toggle_all)
-        toolbar.addWidget(self.pause_button)
+        # 右侧信息栏
+        self.info_panel = self._create_info_panel()
+        main_layout.addWidget(self.info_panel)
         
-        # 清除按钮
-        clear_button = QPushButton("清除已完成")
-        clear_button.clicked.connect(self._clear_completed)
-        toolbar.addWidget(clear_button)
+    def _create_nav_bar(self) -> QWidget:
+        """创建左侧导航栏"""
+        nav_bar = QWidget()
+        nav_bar.setObjectName("navBar")
+        nav_bar.setFixedWidth(220)
+        
+        layout = QVBoxLayout(nav_bar)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # Logo区域
+        logo = QLabel("视频下载器")
+        logo.setObjectName("logo")
+        logo.setAlignment(Qt.AlignCenter)
+        logo.setFixedHeight(60)
+        layout.addWidget(logo)
+        
+        # 导航按钮
+        nav_buttons = QWidget()
+        nav_buttons.setObjectName("navButtons")
+        buttons_layout = QVBoxLayout(nav_buttons)
+        buttons_layout.setContentsMargins(8, 8, 8, 8)
+        buttons_layout.setSpacing(4)
+        
+        # 添加导航按钮
+        self.nav_group = QButtonGroup(self)
+        for text, icon in [
+            ("下载中", "downloading"),
+            ("已完成", "completed"),
+            ("回收站", "recycled"),
+            ("创作者", "creators")
+        ]:
+            btn = self._create_nav_button(text, icon)
+            buttons_layout.addWidget(btn)
+            self.nav_group.addButton(btn)
+            
+        buttons_layout.addStretch()
         
         # 设置按钮
-        settings_button = QPushButton("设置")
-        settings_button.clicked.connect(self._show_settings)
-        toolbar.addWidget(settings_button)
+        settings_btn = self._create_nav_button("设置", "settings")
+        buttons_layout.addWidget(settings_btn)
         
-        # 帮助按钮
-        help_button = QPushButton("帮助")
-        help_button.clicked.connect(self._show_help)
-        toolbar.addWidget(help_button)
+        layout.addWidget(nav_buttons)
         
-        toolbar.addStretch()
+        return nav_bar
         
-        # 状态标签
-        self.status_label = QLabel()
-        toolbar.addWidget(self.status_label)
-        
-        layout.addLayout(toolbar)
-        
-        # 创建任务表格
-        self.task_table = QTableWidget()
-        self.task_table.setColumnCount(7)
-        self.task_table.setHorizontalHeaderLabels([
-            "ID",
-            "URL",
-            "状态",
-            "大小",
-            "进度",
-            "速度",
-            "剩余时间"
-        ])
-        
-        # 设置列宽
-        header = self.task_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
-        
-        # 设置右键菜单
-        self.task_table.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.task_table.customContextMenuRequested.connect(
-            self._show_context_menu
-        )
-        
-        layout.addWidget(self.task_table)
-        
-        # 创建状态栏
-        self.statusBar().showMessage("就绪")
-        
-    def _create_tray_icon(self):
-        """创建托盘图标。"""
-        # 创建托盘图标
-        self.tray_icon = QSystemTrayIcon(self)
-        self.tray_icon.setIcon(
-            self.style().standardIcon(QStyle.SP_ComputerIcon)
-        )
-        
-        # 创建托盘菜单
-        tray_menu = QMenu()
-        
-        # 显示/隐藏
-        show_action = QAction("显示", self)
-        show_action.triggered.connect(self.show)
-        tray_menu.addAction(show_action)
-        
-        # 退出
-        quit_action = QAction("退出", self)
-        quit_action.triggered.connect(self._quit_application)  # 连接到新的退出方法
-        tray_menu.addAction(quit_action)
-        
-        self.tray_icon.setContextMenu(tray_menu)
-        self.tray_icon.show()
-        
-    def _create_timer(self):
-        """创建定时器。"""
-        # 创建更新定时器
-        self.update_timer = QTimer()
-        self.update_timer.timeout.connect(self._update_tasks)
-        self.update_timer.start(1000)  # 每秒更新一次
-        
-    def _add_task(self):
-        """添加下载任务。"""
-        dialog = AddTaskDialog(self.settings, self)
-        dialog.task_added.connect(self._on_task_added)
-        dialog.exec()
-        
-    def _on_task_added(self, task_params: Dict[str, Any]):
-        """处理任务添加。
+    def _create_nav_button(self, text: str, icon: str) -> QPushButton:
+        """创建导航按钮
         
         Args:
-            task_params: 任务参数
-        """
-        try:
-            # 添加任务
-            task_id = self.scheduler.add_task(
-                task_params['url'],
-                task_params['save_dir'],
-                priority=task_params['priority'],
-                speed_limit=task_params['speed_limit']
-            )
-            
-            # 更新界面
-            self._update_tasks()
-            
-            # 显示提示
-            self.statusBar().showMessage(f"任务添加成功: {task_id}")
-            
-        except Exception as e:
-            QMessageBox.warning(
-                self,
-                "错误",
-                f"添加任务失败: {str(e)}"
-            )
-            
-    def _toggle_all(self):
-        """暂停/继续所有任务。"""
-        if self.scheduler._paused:
-            self.scheduler.resume_all()
-            self.pause_button.setText("暂停全部")
-        else:
-            self.scheduler.pause_all()
-            self.pause_button.setText("继续全部")
-            
-    def _clear_completed(self):
-        """清除已完成任务。"""
-        # 确认清除
-        reply = QMessageBox.question(
-            self,
-            "确认清除",
-            "是否清除所有已完成的任务？",
-            QMessageBox.Yes | QMessageBox.No
-        )
-        
-        if reply == QMessageBox.No:
-            return
-            
-        try:
-            # 获取已完成任务
-            completed_tasks = list(self.scheduler._completed_tasks.values())
-            
-            # 清除任务
-            for task in completed_tasks:
-                self.scheduler._completed_tasks.pop(task.id)
-                
-            # 更新界面
-            self._update_tasks()
-            
-            # 显示提示
-            self.statusBar().showMessage(
-                f"已清除 {len(completed_tasks)} 个已完成任务"
-            )
-            
-        except Exception as e:
-            QMessageBox.warning(
-                self,
-                "错误",
-                f"清除任务失败: {str(e)}"
-            )
-        
-    def _show_settings(self):
-        """显示设置对话框。"""
-        # 确保使用Settings实例
-        if not isinstance(self.settings, Settings):
-            settings_manager = Settings()
-            # 将当前设置复制到Settings实例
-            for key, value in self.settings.items():
-                settings_manager.set(key, value)
-            self.settings = settings_manager
-            
-        dialog = SettingsDialog(self.settings, self)
-        dialog.settings_changed.connect(self._on_settings_changed)
-        dialog.exec()
-        
-    def _show_help(self):
-        """显示帮助对话框。"""
-        dialog = HelpDialog(self)
-        dialog.exec()
-        
-    def _show_context_menu(self, pos):
-        """显示右键菜单。
-        
-        Args:
-            pos: 菜单位置
-        """
-        # 获取选中的任务
-        row = self.task_table.rowAt(pos.y())
-        if row < 0:
-            return
-            
-        # 创建菜单
-        menu = QMenu()
-        
-        # 打开文件
-        open_action = QAction("打开文件", self)
-        open_action.triggered.connect(
-            lambda: self._open_file(row)
-        )
-        menu.addAction(open_action)
-        
-        # 打开目录
-        open_dir_action = QAction("打开目录", self)
-        open_dir_action.triggered.connect(
-            lambda: self._open_directory(row)
-        )
-        menu.addAction(open_dir_action)
-        
-        menu.addSeparator()
-        
-        # 暂停/继续
-        task_id = self.task_table.item(row, 0).text()
-        task = self.scheduler.get_task(task_id)
-        if task and task.status == "downloading":
-            pause_action = QAction("暂停", self)
-            pause_action.triggered.connect(
-                lambda: self._pause_task(row)
-            )
-            menu.addAction(pause_action)
-        elif task and task.status == "paused":
-            resume_action = QAction("继续", self)
-            resume_action.triggered.connect(
-                lambda: self._resume_task(row)
-            )
-            menu.addAction(resume_action)
-            
-        # 重试
-        if task and task.status == "failed":
-            retry_action = QAction("重试", self)
-            retry_action.triggered.connect(
-                lambda: self._retry_task(row)
-            )
-            menu.addAction(retry_action)
-            
-        menu.addSeparator()
-        
-        # 删除
-        delete_action = QAction("删除", self)
-        delete_action.triggered.connect(
-            lambda: self._delete_task(row)
-        )
-        menu.addAction(delete_action)
-        
-        # 显示菜单
-        menu.exec(self.task_table.viewport().mapToGlobal(pos))
-        
-    def _update_tasks(self):
-        """更新任务列表。"""
-        # 获取所有任务
-        tasks = (
-            list(self.scheduler._active_tasks.values()) +
-            list(self.scheduler._completed_tasks.values()) +
-            list(self.scheduler._failed_tasks.values())
-        )
-        
-        # 更新表格
-        self.task_table.setRowCount(len(tasks))
-        for i, task in enumerate(tasks):
-            # ID
-            id_item = QTableWidgetItem(task.id)
-            self.task_table.setItem(i, 0, id_item)
-            
-            # URL
-            url_item = QTableWidgetItem(task.url)
-            self.task_table.setItem(i, 1, url_item)
-            
-            # 状态
-            status_item = QTableWidgetItem(task.status)
-            self.task_table.setItem(i, 2, status_item)
-            
-            # 大小
-            size_item = QTableWidgetItem(
-                self._format_size(task.total_size)
-            )
-            self.task_table.setItem(i, 3, size_item)
-            
-            # 进度
-            progress = (
-                task.downloaded_size / task.total_size * 100
-                if task.total_size > 0 else 0
-            )
-            progress_item = QTableWidgetItem(f"{progress:.1f}%")
-            self.task_table.setItem(i, 4, progress_item)
-            
-            # 速度
-            speed_item = QTableWidgetItem(
-                self._format_speed(task.current_speed)
-            )
-            self.task_table.setItem(i, 5, speed_item)
-            
-            # 剩余时间
-            time_item = QTableWidgetItem(
-                str(task.remaining_time)
-                if task.remaining_time else "-"
-            )
-            self.task_table.setItem(i, 6, time_item)
-            
-        # 更新状态栏
-        stats = self.scheduler.get_stats()
-        self.status_label.setText(
-            f"任务: {stats['total_tasks']} "
-            f"活动: {stats['active_tasks']} "
-            f"完成: {stats['completed_tasks']} "
-            f"失败: {stats['failed_tasks']} "
-            f"速度: {self._format_speed(stats['current_speed'])}"
-        )
-        
-    def _format_size(self, size: int) -> str:
-        """格式化文件大小。
-        
-        Args:
-            size: 文件大小(bytes)
+            text: 按钮文本
+            icon: 图标名称
             
         Returns:
-            str: 格式化后的大小
+            QPushButton: 导航按钮
         """
-        if size < 1024:
-            return f"{size} B"
-        elif size < 1024 * 1024:
-            return f"{size/1024:.1f} KB"
-        elif size < 1024 * 1024 * 1024:
-            return f"{size/1024/1024:.1f} MB"
-        else:
-            return f"{size/1024/1024/1024:.1f} GB"
+        btn = QPushButton(text)
+        btn.setObjectName("navButton")
+        btn.setCheckable(True)
+        btn.setFixedHeight(40)
+        
+        # 设置图标
+        icon = QIcon(f":/icons/{icon}.svg")
+        btn.setIcon(icon)
+        btn.setIconSize(QSize(20, 20))
+        
+        return btn
+        
+    def _create_content_area(self) -> QWidget:
+        """创建中间内容区"""
+        content = QWidget()
+        content.setObjectName("contentArea")
+        
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # 工具栏
+        toolbar = self._create_toolbar()
+        layout.addWidget(toolbar)
+        
+        # 任务列表
+        self.task_list = self._create_task_list()
+        layout.addWidget(self.task_list)
+        
+        return content
+        
+    def _create_toolbar(self) -> QWidget:
+        """创建工具栏"""
+        toolbar = QWidget()
+        toolbar.setObjectName("toolbar")
+        toolbar.setFixedHeight(60)
+        
+        layout = QHBoxLayout(toolbar)
+        layout.setContentsMargins(16, 0, 16, 0)
+        
+        # URL输入框
+        self.url_input = QLineEdit()
+        self.url_input.setObjectName("urlInput")
+        self.url_input.setPlaceholderText("输入视频URL或粘贴多个链接(换行分隔)")
+        layout.addWidget(self.url_input)
+        
+        # 添加按钮
+        add_btn = QPushButton("添加任务")
+        add_btn.setObjectName("primaryButton")
+        add_btn.clicked.connect(self._add_download_task)
+        layout.addWidget(add_btn)
+        
+        return toolbar
+        
+    def _create_task_list(self) -> QListWidget:
+        """创建任务列表"""
+        task_list = QListWidget()
+        task_list.setObjectName("taskList")
+        task_list.setSpacing(1)
+        task_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        
+        return task_list
+        
+    def _create_info_panel(self) -> QWidget:
+        """创建右侧信息面板"""
+        panel = QWidget()
+        panel.setObjectName("infoPanel")
+        panel.setFixedWidth(300)
+        
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # 全局状态
+        status = self._create_status_widget()
+        layout.addWidget(status)
+        
+        # 任务详情/设置页面
+        self.detail_stack = QStackedWidget()
+        self.detail_stack.setObjectName("detailStack")
+        
+        # 添加详情页
+        self.task_detail = self._create_task_detail()
+        self.settings_page = self._create_settings_page()
+        
+        self.detail_stack.addWidget(self.task_detail)
+        self.detail_stack.addWidget(self.settings_page)
+        
+        layout.addWidget(self.detail_stack)
+        
+        return panel
+        
+    def _create_status_widget(self) -> QWidget:
+        """创建状态显示组件"""
+        status = QWidget()
+        status.setObjectName("statusWidget")
+        status.setFixedHeight(60)
+        
+        layout = QHBoxLayout(status)
+        layout.setContentsMargins(16, 0, 16, 0)
+        
+        # 下载速度
+        speed_layout = QVBoxLayout()
+        speed_label = QLabel("下载速度")
+        speed_label.setObjectName("statusLabel")
+        self.speed_value = QLabel("0 KB/s")
+        self.speed_value.setObjectName("statusValue")
+        
+        speed_layout.addWidget(speed_label)
+        speed_layout.addWidget(self.speed_value)
+        layout.addLayout(speed_layout)
+        
+        # 活动任务数
+        task_layout = QVBoxLayout()
+        task_label = QLabel("活动任务")
+        task_label.setObjectName("statusLabel")
+        self.task_count = QLabel("0")
+        self.task_count.setObjectName("statusValue")
+        
+        task_layout.addWidget(task_label)
+        task_layout.addWidget(self.task_count)
+        layout.addLayout(task_layout)
+        
+        return status
+        
+    def _create_task_detail(self) -> QWidget:
+        """创建任务详情页"""
+        detail = QWidget()
+        detail.setObjectName("taskDetail")
+        
+        layout = QVBoxLayout(detail)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(16)
+        
+        # 标题
+        title = QLabel("任务详情")
+        title.setObjectName("detailTitle")
+        layout.addWidget(title)
+        
+        # 详细信息
+        info_widget = QWidget()
+        info_widget.setObjectName("detailInfo")
+        info_layout = QFormLayout(info_widget)
+        info_layout.setContentsMargins(16, 16, 16, 16)
+        info_layout.setSpacing(12)
+        
+        # 添加详情项
+        self.detail_filename = QLabel()
+        self.detail_size = QLabel()
+        self.detail_progress = QLabel()
+        self.detail_speed = QLabel()
+        self.detail_eta = QLabel()
+        
+        info_layout.addRow("文件名:", self.detail_filename)
+        info_layout.addRow("大小:", self.detail_size)
+        info_layout.addRow("进度:", self.detail_progress)
+        info_layout.addRow("速度:", self.detail_speed)
+        info_layout.addRow("剩余时间:", self.detail_eta)
+        
+        layout.addWidget(info_widget)
+        layout.addStretch()
+        
+        return detail
+        
+    def _setup_styles(self):
+        """设置界面样式"""
+        # 获取当前主题
+        is_dark = self.settings.get('theme.dark_mode', False)
+        colors = self.COLORS['dark'] if is_dark else self.COLORS
+        
+        # 主窗口样式
+        self.setStyleSheet(f"""
+            QMainWindow {{
+                background: {colors['background']};
+            }}
             
-    def _format_speed(self, speed: int) -> str:
-        """格式化下载速度。
+            /* 导航栏 */
+            #navBar {{
+                background: {colors['surface']};
+                border-right: 1px solid {colors['divider']};
+            }}
+            
+            #logo {{
+                color: {colors['primary']};
+                font-size: 18px;
+                font-weight: bold;
+            }}
+            
+            #navButton {{
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                text-align: left;
+                color: {colors['on_surface']};
+                background: transparent;
+            }}
+            
+            #navButton:hover {{
+                background: {colors['primary']}20;
+            }}
+            
+            #navButton:checked {{
+                background: {colors['primary']}40;
+                color: {colors['primary']};
+            }}
+            
+            /* 内容区 */
+            #contentArea {{
+                background: {colors['background']};
+            }}
+            
+            #toolbar {{
+                background: {colors['surface']};
+                border-bottom: 1px solid {colors['divider']};
+            }}
+            
+            #urlInput {{
+                border: 1px solid {colors['divider']};
+                border-radius: 4px;
+                padding: 8px 12px;
+                background: {colors['background']};
+                color: {colors['on_surface']};
+                selection-background-color: {colors['primary']}40;
+            }}
+            
+            #primaryButton {{
+                background: {colors['primary']};
+                color: {colors['on_primary']};
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: 500;
+            }}
+            
+            #primaryButton:hover {{
+                background: {colors['primary_dark']};
+            }}
+            
+            #taskList {{
+                background: {colors['background']};
+                border: none;
+            }}
+            
+            /* 信息面板 */
+            #infoPanel {{
+                background: {colors['surface']};
+                border-left: 1px solid {colors['divider']};
+            }}
+            
+            #statusWidget {{
+                border-bottom: 1px solid {colors['divider']};
+            }}
+            
+            #statusLabel {{
+                color: {colors['on_surface']}99;
+                font-size: 12px;
+            }}
+            
+            #statusValue {{
+                color: {colors['on_surface']};
+                font-size: 16px;
+                font-weight: 500;
+            }}
+            
+            #detailTitle {{
+                color: {colors['on_surface']};
+                font-size: 16px;
+                font-weight: 500;
+            }}
+            
+            #detailInfo {{
+                background: {colors['background']};
+                border-radius: 4px;
+            }}
+        """)
+        
+    def _setup_speed_timer(self):
+        """设置速度更新定时器"""
+        self.speed_timer = QTimer(self)
+        self.speed_timer.timeout.connect(self._update_speed)
+        self.speed_timer.start(1000)  # 每秒更新一次
+        
+    def _connect_signals(self):
+        """连接信号槽"""
+        pass
+        
+    def _add_download_task(self):
+        """添加下载任务"""
+        urls = self.url_input.text().split("\n")
+        for url in urls:
+            if url.strip():
+                self._create_task_card(url.strip())
+                
+    def _create_task_card(self, url: str) -> QWidget:
+        """创建任务卡片
         
         Args:
-            speed: 下载速度(bytes/s)
+            url: 下载URL
             
         Returns:
-            str: 格式化后的速度
+            QWidget: 任务卡片组件
         """
-        if speed < 1024:
-            return f"{speed} B/s"
-        elif speed < 1024 * 1024:
-            return f"{speed/1024:.1f} KB/s"
-        elif speed < 1024 * 1024 * 1024:
-            return f"{speed/1024/1024:.1f} MB/s"
-        else:
-            return f"{speed/1024/1024/1024:.1f} GB/s"
+        card = QWidget()
+        card.setObjectName("taskCard")
+        
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(16)
+        
+        # 缩略图
+        thumbnail = QLabel()
+        thumbnail.setObjectName("thumbnail")
+        thumbnail.setFixedSize(160, 90)
+        thumbnail.setStyleSheet(f"""
+            background: {self.COLORS['surface']};
+            border-radius: 4px;
+        """)
+        layout.addWidget(thumbnail)
+        
+        # 信息区域
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(8)
+        
+        # 标题和大小
+        title_layout = QHBoxLayout()
+        title_layout.setSpacing(8)
+        
+        title = QLabel(f"正在解析: {url}")
+        title.setObjectName("taskTitle")
+        title_layout.addWidget(title)
+        
+        size = QLabel("0 MB")
+        size.setObjectName("taskSize")
+        title_layout.addWidget(size)
+        title_layout.addStretch()
+        
+        info_layout.addLayout(title_layout)
+        
+        # 进度条
+        progress = QProgressBar()
+        progress.setObjectName("taskProgress")
+        progress.setValue(0)
+        progress.setFixedHeight(4)
+        info_layout.addWidget(progress)
+        
+        # 状态和控制
+        status_layout = QHBoxLayout()
+        status_layout.setSpacing(16)
+        
+        status = QLabel("等待中")
+        status.setObjectName("taskStatus")
+        status_layout.addWidget(status)
+        
+        speed = QLabel("0 KB/s")
+        speed.setObjectName("taskSpeed")
+        status_layout.addWidget(speed)
+        status_layout.addStretch()
+        
+        # 控制按钮
+        pause_btn = QPushButton("暂停")
+        pause_btn.setObjectName("taskButton")
+        status_layout.addWidget(pause_btn)
+        
+        delete_btn = QPushButton("删除")
+        delete_btn.setObjectName("taskButton")
+        status_layout.addWidget(delete_btn)
+        
+        info_layout.addLayout(status_layout)
+        layout.addLayout(info_layout)
+        
+        # 设置卡片样式
+        card.setStyleSheet(f"""
+            #taskCard {{
+                background: {self.COLORS['surface']};
+                border-radius: 4px;
+            }}
             
-    def _open_file(self, row: int):
-        """打开文件。
-        
-        Args:
-            row: 行号
-        """
-        task_id = self.task_table.item(row, 0).text()
-        task = self.scheduler.get_task(task_id)
-        if task and task.save_path.exists():
-            os.startfile(task.save_path)
+            #taskTitle {{
+                color: {self.COLORS['on_surface']};
+                font-size: 14px;
+                font-weight: 500;
+            }}
             
-    def _open_directory(self, row: int):
-        """打开目录。
-        
-        Args:
-            row: 行号
-        """
-        task_id = self.task_table.item(row, 0).text()
-        task = self.scheduler.get_task(task_id)
-        if task and task.save_path.parent.exists():
-            os.startfile(task.save_path.parent)
+            #taskSize {{
+                color: {self.COLORS['on_surface']}99;
+                font-size: 12px;
+            }}
             
-    def _pause_task(self, row: int):
-        """暂停任务。
-        
-        Args:
-            row: 行号
-        """
-        task_id = self.task_table.item(row, 0).text()
-        self.scheduler.pause_task(task_id)
-        
-    def _resume_task(self, row: int):
-        """继续任务。
-        
-        Args:
-            row: 行号
-        """
-        task_id = self.task_table.item(row, 0).text()
-        self.scheduler.resume_task(task_id)
-        
-    def _retry_task(self, row: int):
-        """重试任务。
-        
-        Args:
-            row: 行号
-        """
-        task_id = self.task_table.item(row, 0).text()
-        task = self.scheduler.get_task(task_id)
-        if task:
-            self.scheduler.add_task(
-                task.url,
-                task.save_path,
-                priority=task.priority,
-                speed_limit=task.speed_limit,
-                chunk_size=task.chunk_size,
-                buffer_size=task.buffer_size,
-                retries=task.retries,
-                timeout=task.timeout,
-                headers=task.headers,
-                cookies=task.cookies
-            )
+            #taskProgress {{
+                background: {self.COLORS['divider']};
+                border: none;
+                border-radius: 2px;
+            }}
             
-    def _delete_task(self, row: int):
-        """删除任务。
-        
-        Args:
-            row: 行号
-        """
-        task_id = self.task_table.item(row, 0).text()
-        task = self.scheduler.get_task(task_id)
-        
-        if task:
-            # 确认删除
-            reply = QMessageBox.question(
-                self,
-                "确认删除",
-                "是否同时删除已下载的文件？",
-                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
-            )
+            #taskProgress::chunk {{
+                background: {self.COLORS['primary']};
+                border-radius: 2px;
+            }}
             
-            if reply == QMessageBox.Cancel:
-                return
-                
-            try:
-                # 取消任务
-                self.scheduler.cancel_task(task_id)
-                
-                # 删除文件
-                if reply == QMessageBox.Yes and task.save_path.exists():
-                    task.save_path.unlink()
-                    
-                # 从列表中移除
-                self.task_table.removeRow(row)
-                
-                # 显示提示
-                self.statusBar().showMessage(f"任务已删除: {task_id}")
-                
-            except Exception as e:
-                QMessageBox.warning(
-                    self,
-                    "错误",
-                    f"删除任务失败: {str(e)}"
-                )
-                
-    def _on_settings_changed(self, settings: Dict[str, Any]):
-        """处理设置变更。
+            #taskStatus, #taskSpeed {{
+                color: {self.COLORS['on_surface']}99;
+                font-size: 12px;
+            }}
+            
+            #taskButton {{
+                background: transparent;
+                border: 1px solid {self.COLORS['divider']};
+                border-radius: 4px;
+                padding: 4px 12px;
+                color: {self.COLORS['on_surface']};
+                font-size: 12px;
+            }}
+            
+            #taskButton:hover {{
+                border-color: {self.COLORS['primary']};
+                color: {self.COLORS['primary']};
+            }}
+        """)
         
-        Args:
-            settings: 新的设置
-        """
+        return card
+
+    def _create_settings_page(self) -> QWidget:
+        """创建设置页面"""
+        from .settings_page import SettingsPage
+        return SettingsPage(self.settings, self)
+        
+    def _load_settings(self):
+        """加载设置"""
         try:
-            # 更新调度器配置
-            self.scheduler.max_concurrent = settings.get("download.max_concurrent", 3)
-            self.scheduler.max_retries = settings.get("download.max_retries", 3)
-            self.scheduler.default_timeout = settings.get("download.timeout", 30)
+            # 下载设置
+            self.path_input.setText(self.settings.get('download.save_dir', ''))
+            self.threads_spin.setValue(self.settings.get('download.max_concurrent', 3))
             
-            # 更新本地设置
-            self.settings = settings
-            
-            # 保存设置
-            settings_file = Path("config/settings.json")
-            settings_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(settings_file, "w", encoding="utf-8") as f:
-                json.dump(settings, f, ensure_ascii=False, indent=2)
+            # 速度限制
+            speed_limit = self.settings.get('download.speed_limit', 0)
+            if speed_limit > 0:
+                self.speed_limit_spin.setValue(speed_limit)
+                speed_check = self.findChild(QCheckBox, "speedCheck")
+                if speed_check:
+                    speed_check.setChecked(True)
+                    self.speed_limit_spin.setEnabled(True)
                 
-            # 显示提示
-            self.statusBar().showMessage("设置已保存")
+            # 代理设置
+            self.proxy_check.setChecked(self.settings.get('proxy.enabled', False))
+            self.proxy_type.setCurrentText(self.settings.get('proxy.type', 'HTTP'))
+            self.proxy_input.setText(self.settings.get('proxy.host', ''))
+            
+            # 主题设置
+            self.theme_combo.setCurrentText("暗色" if self.settings.get('theme.dark_mode', True) else "明亮")
             
         except Exception as e:
-            logger.error(f"保存设置失败: {e}")
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.critical(
-                self,
-                "错误",
-                f"保存设置失败: {e}"
-            )
+            logger.error(f"加载设置失败: {e}")
+            QMessageBox.warning(self, "错误", f"加载设置失败: {e}")
+
+    def _on_theme_changed(self, theme: str):
+        """主题变更处理
+        
+        Args:
+            theme: 主题名称
+        """
+        try:
+            dark_mode = theme == "暗色"
+            self.settings.set('theme.dark_mode', dark_mode)
+            self.settings.save()
             
-    def _quit_application(self):
-        """退出应用程序。"""
-        self._force_quit = True  # 设置强制退出标志
-        self.close()  # 触发关闭事件
+            # 更新主题
+            if hasattr(self, 'theme_manager'):
+                self.theme_manager.switch_dark_mode(dark_mode)
+                
+        except Exception as e:
+            logger.error(f"切换主题失败: {e}")
+            QMessageBox.warning(self, "错误", f"切换主题失败: {e}")
+
+    def _setup_styles(self):
+        """设置界面样式"""
+        # 获取当前主题
+        is_dark = self.settings.get('theme.dark_mode', False)
+        colors = self.COLORS['dark'] if is_dark else self.COLORS
+        
+        # 主窗口样式
+        self.setStyleSheet(f"""
+            QMainWindow {{
+                background: {colors['background']};
+            }}
+            
+            /* 导航栏 */
+            #navBar {{
+                background: {colors['surface']};
+                border-right: 1px solid {colors['divider']};
+            }}
+            
+            #logo {{
+                color: {colors['primary']};
+                font-size: 18px;
+                font-weight: bold;
+            }}
+            
+            #navButton {{
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                text-align: left;
+                color: {colors['on_surface']};
+                background: transparent;
+            }}
+            
+            #navButton:hover {{
+                background: {colors['primary']}20;
+            }}
+            
+            #navButton:checked {{
+                background: {colors['primary']}40;
+                color: {colors['primary']};
+            }}
+            
+            /* 内容区 */
+            #contentArea {{
+                background: {colors['background']};
+            }}
+            
+            #toolbar {{
+                background: {colors['surface']};
+                border-bottom: 1px solid {colors['divider']};
+            }}
+            
+            #urlInput {{
+                border: 1px solid {colors['divider']};
+                border-radius: 4px;
+                padding: 8px 12px;
+                background: {colors['background']};
+                color: {colors['on_surface']};
+                selection-background-color: {colors['primary']}40;
+            }}
+            
+            #primaryButton {{
+                background: {colors['primary']};
+                color: {colors['on_primary']};
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: 500;
+            }}
+            
+            #primaryButton:hover {{
+                background: {colors['primary_dark']};
+            }}
+            
+            #taskList {{
+                background: {colors['background']};
+                border: none;
+            }}
+            
+            /* 信息面板 */
+            #infoPanel {{
+                background: {colors['surface']};
+                border-left: 1px solid {colors['divider']};
+            }}
+            
+            #statusWidget {{
+                border-bottom: 1px solid {colors['divider']};
+            }}
+            
+            #statusLabel {{
+                color: {colors['on_surface']}99;
+                font-size: 12px;
+            }}
+            
+            #statusValue {{
+                color: {colors['on_surface']};
+                font-size: 16px;
+                font-weight: 500;
+            }}
+            
+            #detailTitle {{
+                color: {colors['on_surface']};
+                font-size: 16px;
+                font-weight: 500;
+            }}
+            
+            #detailInfo {{
+                background: {colors['background']};
+                border-radius: 4px;
+            }}
+        """)
+        
+    def _setup_speed_timer(self):
+        """设置速度更新定时器"""
+        self.speed_timer = QTimer(self)
+        self.speed_timer.timeout.connect(self._update_speed)
+        self.speed_timer.start(1000)  # 每秒更新一次
+        
+    def _connect_signals(self):
+        """连接信号槽"""
+        pass
+        
+    def _update_speed(self):
+        """更新速度显示"""
+        # TODO: 从下载管理器获取实际速度
+        import random
+        download = random.randint(100, 2000)
+        upload = random.randint(10, 500)
+        
+        self.speed_value.setText(f"{download} KB/s")
+        self.task_count.setText(str(self.task_list.count()))
+        
+    def _restore_window_state(self):
+        """恢复窗口状态"""
+        settings = QSettings()
+        geometry = settings.value("mainWindow/geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+        else:
+            # 首次运行,居中显示
+            screen = QApplication.primaryScreen().geometry()
+            self.move(
+                (screen.width() - self.width()) // 2,
+                (screen.height() - self.height()) // 2
+            )
             
     def closeEvent(self, event):
-        """处理关闭事件。
-        
-        Args:
-            event: 关闭事件
-        """
-        if self._force_quit:
-            # 如果是强制退出，则停止调度器并接受关闭事件
-            logger.info("应用程序关闭")
-            self.scheduler.stop()
-            event.accept()
-        elif self.tray_icon.isVisible():
-            # 如果不是强制退出且托盘图标可见，则最小化到托盘
-            QMessageBox.information(
-                self,
-                "提示",
-                '程序将继续在后台运行。要退出程序，请右键点击托盘图标并选择"退出"。'
-            )
-            self.hide()
-            event.ignore()
-        else:
-            # 其他情况下正常关闭
-            logger.info("应用程序关闭")
-            self.scheduler.stop()
-            event.accept()
+        """窗口关闭事件处理"""
+        # 保存窗口状态
+        settings = QSettings()
+        settings.setValue("mainWindow/geometry", self.saveGeometry())
+        event.accept()
 
 if __name__ == "__main__":
     import sys

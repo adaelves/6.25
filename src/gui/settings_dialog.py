@@ -31,6 +31,88 @@ from src.core.settings import Settings
 
 logger = logging.getLogger(__name__)
 
+class ProxyTestThread(QThread):
+    """代理测试线程。
+    
+    用于在后台测试代理连接。
+    
+    Signals:
+        status_changed: 状态变更信号
+        test_finished: 测试完成信号
+    """
+    
+    status_changed = Signal(str)  # 状态文本
+    test_finished = Signal(bool)  # 测试结果
+    
+    def __init__(self, proxy_url: str, timeout: int):
+        """初始化代理测试线程。
+        
+        Args:
+            proxy_url: 代理地址
+            timeout: 超时时间(秒)
+        """
+        super().__init__()
+        self.proxy_url = proxy_url
+        self.timeout = timeout
+        
+    def run(self):
+        """运行测试。"""
+        import requests
+        
+        try:
+            self.status_changed.emit("正在测试...")
+            
+            # 解析代理地址
+            if "://" not in self.proxy_url:
+                self.proxy_url = f"http://{self.proxy_url}"
+                
+            proxies = {
+                "http": self.proxy_url,
+                "https": self.proxy_url
+            }
+            
+            # 测试连接 (使用百度作为测试网站)
+            response = requests.get(
+                "https://www.baidu.com",
+                proxies=proxies,
+                timeout=self.timeout,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                }
+            )
+            
+            if response.status_code == 200:
+                self.status_changed.emit("代理可用")
+                self.test_finished.emit(True)
+            else:
+                self.status_changed.emit(f"代理响应异常: {response.status_code}")
+                self.test_finished.emit(False)
+                
+        except requests.exceptions.ProxyError as e:
+            self.status_changed.emit("代理连接失败")
+            logger.error(f"代理测试失败: {e}")
+            self.test_finished.emit(False)
+            
+        except requests.exceptions.SSLError as e:
+            self.status_changed.emit("SSL证书验证失败")
+            logger.error(f"代理测试失败: {e}")
+            self.test_finished.emit(False)
+            
+        except requests.exceptions.ConnectionError as e:
+            self.status_changed.emit("网络连接失败")
+            logger.error(f"代理测试失败: {e}")
+            self.test_finished.emit(False)
+            
+        except requests.exceptions.Timeout as e:
+            self.status_changed.emit("连接超时")
+            logger.error(f"代理测试失败: {e}")
+            self.test_finished.emit(False)
+            
+        except Exception as e:
+            self.status_changed.emit("测试失败")
+            logger.error(f"代理测试失败: {e}")
+            self.test_finished.emit(False)
+
 class SettingsDialog(QDialog):
     """设置对话框。
     
@@ -252,74 +334,43 @@ class SettingsDialog(QDialog):
         
     def _test_proxy(self):
         """测试代理连接。"""
-        import requests
-        import threading
+        # 获取代理设置
+        proxy_enabled = self.proxy_check.isChecked()
+        if not proxy_enabled:
+            self.proxy_test_status.setText("请先启用代理")
+            return
+            
+        proxy_url = self.proxy_edit.text().strip()
+        if not proxy_url:
+            self.proxy_test_status.setText("请输入代理地址")
+            return
+            
+        # 禁用按钮
+        self.proxy_test_btn.setEnabled(False)
         
-        def do_test():
-            try:
-                # 禁用按钮
-                self.proxy_test_btn.setEnabled(False)
-                self.proxy_test_status.setText("正在测试...")
-                
-                # 获取代理设置
-                proxy_enabled = self.proxy_check.isChecked()
-                if not proxy_enabled:
-                    self.proxy_test_status.setText("请先启用代理")
-                    self.proxy_test_btn.setEnabled(True)
-                    return
-                    
-                proxy_url = self.proxy_edit.text().strip()
-                if not proxy_url:
-                    self.proxy_test_status.setText("请输入代理地址")
-                    self.proxy_test_btn.setEnabled(True)
-                    return
-                    
-                # 解析代理地址
-                if "://" not in proxy_url:
-                    proxy_url = f"http://{proxy_url}"
-                    
-                proxies = {
-                    "http": proxy_url,
-                    "https": proxy_url
-                }
-                
-                # 测试连接
-                timeout = self.timeout_spin.value()
-                response = requests.get(
-                    "http://www.google.com",
-                    proxies=proxies,
-                    timeout=timeout
-                )
-                
-                if response.status_code == 200:
-                    self.proxy_test_status.setText("代理可用")
-                else:
-                    self.proxy_test_status.setText(f"代理响应异常: {response.status_code}")
-                    
-            except requests.exceptions.ProxyError as e:
-                self.proxy_test_status.setText("代理连接失败")
-                logger.error(f"代理测试失败: {e}")
-                
-            except requests.exceptions.ConnectionError as e:
-                self.proxy_test_status.setText("网络连接失败")
-                logger.error(f"代理测试失败: {e}")
-                
-            except requests.exceptions.Timeout as e:
-                self.proxy_test_status.setText("连接超时")
-                logger.error(f"代理测试失败: {e}")
-                
-            except Exception as e:
-                self.proxy_test_status.setText("测试失败")
-                logger.error(f"代理测试失败: {e}")
-                
-            finally:
-                # 启用按钮
-                self.proxy_test_btn.setEnabled(True)
-                
-        # 在新线程中执行测试
-        thread = threading.Thread(target=do_test)
-        thread.daemon = True
-        thread.start()
+        # 创建并启动测试线程
+        self.test_thread = ProxyTestThread(
+            proxy_url=proxy_url,
+            timeout=self.timeout_spin.value()
+        )
+        self.test_thread.status_changed.connect(self.proxy_test_status.setText)
+        self.test_thread.test_finished.connect(self._on_proxy_test_finished)
+        self.test_thread.start()
+        
+    def _on_proxy_test_finished(self, success: bool):
+        """处理代理测试完成。
+        
+        Args:
+            success: 测试是否成功
+        """
+        # 启用按钮
+        self.proxy_test_btn.setEnabled(True)
+        
+        # 设置按钮样式
+        if success:
+            self.proxy_test_status.setStyleSheet("color: green;")
+        else:
+            self.proxy_test_status.setStyleSheet("color: red;")
         
     def get_settings(self) -> Dict[str, Any]:
         """获取设置。

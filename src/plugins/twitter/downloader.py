@@ -20,6 +20,8 @@ import hashlib
 import random
 from bs4 import BeautifulSoup
 from ratelimit import limits, sleep_and_retry
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from src.core.downloader import BaseDownloader
 from src.core.exceptions import DownloadError, APIError, RateLimitException
@@ -55,6 +57,10 @@ class TwitterDownloader(BaseDownloader):
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15'
     ]
+
+    # API端点
+    API_BASE = "https://api.twitter.com/2"
+    GUEST_TOKEN_URL = "https://api.twitter.com/1.1/guest/activate.json"
 
     def __init__(
         self,
@@ -100,57 +106,41 @@ class TwitterDownloader(BaseDownloader):
     def _setup_yt_dlp(self):
         """设置yt-dlp下载器。"""
         self.yt_dlp_opts = {
-            # 基本配置
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best/jpg/png',  # 添加图片格式支持
-            'outtmpl': os.path.join(str(self.config.save_dir), self.config.output_template),
-            
-            # 提取设置
-            'extract_flat': False,
-            'ignoreerrors': True,
-            'no_warnings': True,
+            'format': 'bestvideo+bestaudio/best',
+            'outtmpl': str(self.save_dir / '%(uploader)s/%(title)s-%(id)s.%(ext)s'),
             'quiet': True,
-            
-            # 网络设置
-            'nocheckcertificate': True,
-            'proxy': self.config.proxy,
-            'socket_timeout': self.config.timeout,
-            'retries': self.config.max_retries,
-            
-            # 回调函数
+            'no_warnings': True,
+            'extract_flat': False,
+            'retries': self.max_retries,
+            'socket_timeout': self.timeout,
+            'http_chunk_size': 1024 * 1024,  # 1MB
+            'buffersize': 1024 * 1024 * 10,  # 10MB
+            'proxy': self.proxy,
+            'verify': False,  # 禁用SSL验证
+            'nocheckcertificate': True,  # 禁用证书检查
             'progress_hooks': [self._progress_hook],
-            'postprocessor_hooks': [self._postprocessor_hook],
-            
-            # Twitter特定设置
-            'extractor_args': {
-                'twitter': {
-                    'api': ['graphql'],
-                }
-            },
-            
-            # 媒体处理设置
-            'writethumbnail': True,
-            'writesubtitles': True,
-            'merge_output_format': 'mp4',
-            
-            # 图片下载设置
-            'extract_flat': 'in_playlist',
-            'download_archive': os.path.join(str(self.config.save_dir), '.download_archive'),
-            'playlist_items': '1:',
-            
-            # 额外设置
-            'add_metadata': True,
-            'embed_thumbnail': True,
-            'postprocessors': [{
-                'key': 'FFmpegMetadata',
-                'add_metadata': True,
-            }]
+            'cookiesfrombrowser': ('chrome',),  # 从Chrome获取Cookie
+            'concurrent_fragment_downloads': 3,  # 并发下载片段数
+            'fragment_retries': 10,  # 片段重试次数
+            'retry_sleep_functions': {'fragment': lambda n: 1 + n * 2},  # 重试延迟
+            'extractor_retries': 3,  # 提取器重试次数
+            'file_access_retries': 3,  # 文件访问重试次数
+            'hls_prefer_native': True,  # 使用原生HLS下载器
+            'hls_split_discontinuity': True,  # 分割不连续点
+            'external_downloader_args': ['--timeout', '30'],  # 外部下载器参数
         }
 
-        # 添加Cookie文件
+        # 添加Cookie
         if self.cookie_manager:
-            cookie_file = self.cookie_manager.get_cookie_file("twitter")
-            if os.path.exists(cookie_file):
-                self.yt_dlp_opts['cookiefile'] = cookie_file
+            cookies = self.cookie_manager.get_cookies("twitter")
+            if cookies:
+                cookie_file = self.cookie_manager.cookie_dir / "twitter.txt"
+                with open(cookie_file, "w") as f:
+                    for cookie in cookies:
+                        f.write(f"{cookie.domain}\tTRUE\t{cookie.path}\t"
+                               f"{'TRUE' if cookie.secure else 'FALSE'}\t0\t"
+                               f"{cookie.name}\t{cookie.value}\n")
+                self.yt_dlp_opts['cookiefile'] = str(cookie_file)
 
     def _progress_hook(self, d: Dict[str, Any]):
         """下载进度回调。
@@ -415,19 +405,12 @@ class TwitterDownloader(BaseDownloader):
             str: 访客令牌
         """
         try:
-            headers = {
-                'authorization': 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA'
-            }
-            response = requests.post(
-                'https://api.twitter.com/1.1/guest/activate.json',
-                headers=headers,
-                proxies={'http': self.proxy, 'https': self.proxy} if self.proxy else None
-            )
+            response = self.session.post(self.GUEST_TOKEN_URL)
             response.raise_for_status()
-            return response.json()['guest_token']
+            return response.json()["guest_token"]
         except Exception as e:
-            logger.error(f"获取访客令牌失败: {str(e)}")
-            return ''
+            logger.error(f"获取访客令牌失败: {e}")
+            raise DownloadError("获取访客令牌失败") from e
 
     def _extract_tweet_result(self, data: Dict) -> Optional[Dict]:
         """从GraphQL响应中提取推文数据。
@@ -799,6 +782,62 @@ class TwitterDownloader(BaseDownloader):
             url = f'https://{url}'
             
         return url
+
+    def _create_session(self) -> requests.Session:
+        """创建HTTP会话。
+        
+        Returns:
+            requests.Session: 配置好的会话对象
+        """
+        session = super()._create_session()
+        
+        # 禁用SSL验证
+        session.verify = False
+        
+        # 设置重试策略
+        retry = Retry(
+            total=5,
+            backoff_factor=0.5,
+            status_forcelist=[500, 502, 503, 504, 429],
+            allowed_methods=["GET", "POST", "HEAD"]
+        )
+        
+        # 创建适配器
+        adapter = HTTPAdapter(
+            max_retries=retry,
+            pool_connections=10,
+            pool_maxsize=10,
+            pool_block=False
+        )
+        
+        # 配置适配器
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        
+        # 更新请求头
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Cache-Control": "max-age=0",
+            "Authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"  # Twitter API Bearer Token
+        })
+        
+        return session
+
+    def _update_guest_token(self):
+        """更新访客令牌。"""
+        guest_token = self._get_guest_token()
+        self.session.headers.update({
+            "x-guest-token": guest_token
+        })
 
 class TwitterDownloaderRouter:
     """Twitter下载器路由。

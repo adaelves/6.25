@@ -17,9 +17,12 @@ import hashlib
 import hmac
 from concurrent.futures import ThreadPoolExecutor
 
+from PySide6.QtCore import QObject, Signal
+
 from .exceptions import DownloadError, NetworkError, AuthError
 from .cache import Cache
 from .cookie_manager import CookieManager
+from .task import DownloadTask
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +83,7 @@ class DownloadTask:
     status: str = "pending"  # pending, downloading, paused, completed, failed
     error: Optional[str] = None
 
-class DownloadScheduler:
+class DownloadScheduler(QObject):
     """下载调度器。
     
     提供以下功能：
@@ -90,13 +93,18 @@ class DownloadScheduler:
     4. 缓存管理
     5. 安全性控制
     
-    Attributes:
-        max_concurrent: 最大并发数
-        max_retries: 最大重试次数
-        default_timeout: 默认超时时间
-        cache: 缓存管理器
-        cookie_manager: Cookie管理器
+    Signals:
+        task_added: 任务添加信号
+        task_removed: 任务移除信号
+        task_updated: 任务更新信号
+        stats_updated: 统计信息更新信号
     """
+    
+    # 定义信号
+    task_added = Signal(object)
+    task_removed = Signal(object)
+    task_updated = Signal(object)
+    stats_updated = Signal(dict)
     
     def __init__(
         self,
@@ -117,9 +125,14 @@ class DownloadScheduler:
             cookie_manager: Cookie管理器
             secret_key: 签名密钥
         """
+        super().__init__()
+        
         self.max_concurrent = max_concurrent
         self.max_retries = max_retries
         self.default_timeout = default_timeout
+        
+        # 任务列表
+        self.tasks = []
         
         # 任务队列
         self._task_queue = PriorityQueue()
@@ -377,38 +390,36 @@ class DownloadScheduler:
         
         return signature
         
-    def add_task(
-        self,
-        url: str,
-        save_path: Path,
-        **kwargs
-    ) -> str:
+    def add_task(self, task: DownloadTask):
         """添加下载任务。
         
         Args:
-            url: 下载URL
-            save_path: 保存路径
-            **kwargs: 其他参数
-            
-        Returns:
-            str: 任务ID
+            task: 下载任务
         """
-        # 生成任务ID
-        task_id = hashlib.md5(f"{url}{time.time()}".encode()).hexdigest()
+        self.tasks.append(task)
+        self.task_added.emit(task)
         
-        # 创建任务
-        task = DownloadTask(
-            id=task_id,
-            url=url,
-            save_path=save_path,
-            **kwargs
-        )
+    def remove_task(self, task: DownloadTask):
+        """移除下载任务。
         
-        # 添加到队列
-        self._task_queue.put((task.priority, task))
-        self.stats['total_tasks'] += 1
+        Args:
+            task: 下载任务
+        """
+        if task in self.tasks:
+            self.tasks.remove(task)
+            self.task_removed.emit(task)
+            
+    def update_task(self, task: DownloadTask):
+        """更新任务状态。
         
-        return task_id
+        Args:
+            task: 下载任务
+        """
+        self.task_updated.emit(task)
+        
+    def update_stats(self):
+        """更新统计信息。"""
+        self.stats_updated.emit(self.stats)
         
     def pause_task(self, task_id: str):
         """暂停任务。
@@ -419,6 +430,9 @@ class DownloadScheduler:
         if task_id in self._active_tasks:
             self._active_tasks[task_id].status = "paused"
             
+        # 发送信号
+        self.task_updated.emit(self._active_tasks[task_id])
+            
     def resume_task(self, task_id: str):
         """恢复任务。
         
@@ -428,6 +442,9 @@ class DownloadScheduler:
         if task_id in self._active_tasks:
             self._active_tasks[task_id].status = "downloading"
             
+        # 发送信号
+        self.task_updated.emit(self._active_tasks[task_id])
+            
     def cancel_task(self, task_id: str):
         """取消任务。
         
@@ -436,6 +453,9 @@ class DownloadScheduler:
         """
         if task_id in self._active_tasks:
             self._active_tasks[task_id].status = "cancelled"
+            
+        # 发送信号
+        self.task_updated.emit(self._active_tasks[task_id])
             
     def get_task(self, task_id: str) -> Optional[DownloadTask]:
         """获取任务。
@@ -466,6 +486,10 @@ class DownloadScheduler:
         for task in self._active_tasks.values():
             task.status = "paused"
             
+        # 发送信号
+        for task in self._active_tasks.values():
+            self.task_updated.emit(task)
+            
     def resume_all(self):
         """恢复所有任务。"""
         self._paused = False
@@ -473,7 +497,32 @@ class DownloadScheduler:
             if task.status == "paused":
                 task.status = "downloading"
                 
+        # 发送信号
+        for task in self._active_tasks.values():
+            self.task_updated.emit(task)
+                
     def stop(self):
         """停止调度器。"""
         self._running = False
-        self._thread_pool.shutdown(wait=True) 
+        self._thread_pool.shutdown(wait=True)
+        
+    def set_config(self, config: Dict[str, Any]):
+        """设置调度器配置。
+        
+        Args:
+            config: 配置字典，支持以下选项：
+                - max_concurrent: 最大并发数
+                - speed_limit: 速度限制(字节/秒)
+        """
+        if 'max_concurrent' in config:
+            self.max_concurrent = config['max_concurrent']
+            # 更新线程池
+            self._thread_pool.shutdown(wait=True)
+            self._thread_pool = ThreadPoolExecutor(max_workers=self.max_concurrent)
+            
+        if 'speed_limit' in config:
+            for task in self._active_tasks.values():
+                task.speed_limit = config['speed_limit'] 
+
+        # 发送信号
+        self.stats_updated.emit(self.get_stats()) 

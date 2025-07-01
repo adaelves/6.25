@@ -1,17 +1,18 @@
 {
     "download": {
-        "save_dir": "C:\\Users\\Wang\\Downloads",
+        "save_dir": "E:/test/Download",
         "max_concurrent": 3,
         "chunk_size": 1048576,
         "timeout": 30,
         "max_retries": 3,
         "auto_retry": true,
         "overwrite": false,
-        "buffer_size": 10485760
+        "buffer_size": 10485760,
+        "notify_on_complete": true
     },
     "proxy": {
         "enabled": true,
-        "type": "http",
+        "type": "HTTP",
         "host": "127.0.0.1",
         "port": 7890
     },
