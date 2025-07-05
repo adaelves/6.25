@@ -1,135 +1,186 @@
+"""下载器模块"""
+
 import os
 import asyncio
-import aiohttp
-from typing import Optional, Dict
-from urllib.parse import urlparse
-from PySide6.QtCore import QObject, Signal
+from typing import Optional, Callable, Dict, Any
+from datetime import datetime
 import yt_dlp
 
-class VideoDownloader(QObject):
+class VideoDownloader:
     """视频下载器类"""
     
-    # 信号定义
-    progress_updated = Signal(str, int)  # 视频ID, 进度
-    speed_updated = Signal(int, int)  # 速度(KB/s), 剩余时间(s)
-    download_error = Signal(str, str)  # 视频ID, 错误信息
-    download_complete = Signal(str)  # 视频ID
-    
-    def __init__(self) -> None:
-        super().__init__()
-        self._tasks: Dict[str, asyncio.Task] = {}
-        self._session: Optional[aiohttp.ClientSession] = None
-        
-    def download(
+    def __init__(
         self,
-        url: str,
-        format: str = "mp4",
-        quality: str = "best",
-        save_path: str = "downloads",
-        proxy: Optional[str] = None,
-        max_threads: int = 4
-    ) -> None:
-        """开始下载视频
+        download_path: str = "downloads",
+        proxy: Optional[str] = None
+    ):
+        self.download_path = download_path
+        self.proxy = proxy
+        
+        # 确保下载目录存在
+        if not os.path.exists(download_path):
+            os.makedirs(download_path)
+    
+    def _get_format(self, format: str, quality: str) -> str:
+        """获取下载格式字符串
         
         Args:
-            url: 视频URL
-            format: 下载格式
-            quality: 视频质量
-            save_path: 保存路径
-            proxy: 代理地址
-            max_threads: 最大线程数
-        """
-        # 确保保存目录存在
-        os.makedirs(save_path, exist_ok=True)
-        
-        # 配置yt-dlp选项
-        ydl_opts = {
-            'format': self._get_format_string(format, quality),
-            'outtmpl': os.path.join(save_path, '%(title)s.%(ext)s'),
-            'progress_hooks': [self._progress_hook],
-            'proxy': proxy,
-            'max_downloads': 1,
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-        }
-        
-        # 启动下载任务
-        video_id = self._get_video_id(url)
-        task = asyncio.create_task(self._download_async(url, ydl_opts))
-        self._tasks[video_id] = task
-        
-    async def _download_async(self, url: str, opts: dict) -> None:
-        """异步下载视频
-        
-        Args:
-            url: 视频URL
-            opts: yt-dlp选项
-        """
-        video_id = self._get_video_id(url)
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: ydl.download([url])
-                )
-            self.download_complete.emit(video_id)
-        except Exception as e:
-            self.download_error.emit(video_id, str(e))
-        finally:
-            if video_id in self._tasks:
-                del self._tasks[video_id]
-                
-    def _progress_hook(self, d: dict) -> None:
-        """下载进度回调
-        
-        Args:
-            d: 进度信息字典
-        """
-        if d['status'] == 'downloading':
-            # 计算下载进度
-            total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
-            downloaded = d.get('downloaded_bytes', 0)
-            if total > 0:
-                progress = int(downloaded * 100 / total)
-                self.progress_updated.emit(d['filename'], progress)
-            
-            # 计算下载速度和剩余时间
-            speed = d.get('speed', 0)
-            if speed:
-                speed_kb = int(speed / 1024)
-                eta = d.get('eta', 0)
-                self.speed_updated.emit(speed_kb, eta)
-                
-    def _get_format_string(self, format: str, quality: str) -> str:
-        """获取格式字符串
-        
-        Args:
-            format: 下载格式
+            format: 目标格式
             quality: 视频质量
             
         Returns:
             str: yt-dlp格式字符串
         """
-        if format.lower() == 'mp3':
-            return 'bestaudio[ext=m4a]/bestaudio/best'
+        if format == "MP3":
+            return "bestaudio/best"
             
+        # 视频质量映射
         quality_map = {
-            '最高质量': 'bestvideo+bestaudio/best',
-            '1080p': 'bestvideo[height<=1080]+bestaudio/best[height<=1080]',
-            '720p': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
-            '480p': 'bestvideo[height<=480]+bestaudio/best[height<=480]'
+            "最高质量": "bestvideo+bestaudio/best",
+            "1080p": "bestvideo[height<=1080]+bestaudio/best",
+            "720p": "bestvideo[height<=720]+bestaudio/best",
+            "480p": "bestvideo[height<=480]+bestaudio/best"
         }
-        return quality_map.get(quality, 'bestvideo+bestaudio/best')
         
-    def _get_video_id(self, url: str) -> str:
-        """从URL获取视频ID
+        return quality_map.get(quality, "bestvideo+bestaudio/best")
+    
+    def _get_options(
+        self,
+        format: str,
+        quality: str,
+        progress_hook: Optional[Callable] = None
+    ) -> Dict[str, Any]:
+        """获取下载选项
+        
+        Args:
+            format: 目标格式
+            quality: 视频质量
+            progress_hook: 进度回调
+            
+        Returns:
+            Dict[str, Any]: yt-dlp选项
+        """
+        options = {
+            "format": self._get_format(format, quality),
+            "outtmpl": os.path.join(
+                self.download_path,
+                "%(title)s.%(ext)s"
+            ),
+            "merge_output_format": format.lower(),
+            "writethumbnail": True,
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": ["en", "zh-CN"],
+            "postprocessors": [{
+                "key": "FFmpegMetadata",
+                "add_metadata": True,
+            }]
+        }
+        
+        # 添加MP3后处理器
+        if format == "MP3":
+            options["postprocessors"].append({
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            })
+        
+        # 添加代理
+        if self.proxy:
+            options["proxy"] = self.proxy
+        
+        # 添加进度回调
+        if progress_hook:
+            options["progress_hooks"] = [progress_hook]
+        
+        return options
+    
+    async def download(
+        self,
+        url: str,
+        format: str = "MP4",
+        quality: str = "1080p",
+        progress_hook: Optional[Callable] = None
+    ) -> Dict[str, Any]:
+        """异步下载视频
+        
+        Args:
+            url: 视频URL
+            format: 目标格式
+            quality: 视频质量
+            progress_hook: 进度回调
+            
+        Returns:
+            Dict[str, Any]: 下载信息
+        """
+        loop = asyncio.get_event_loop()
+        
+        # 获取下载选项
+        options = self._get_options(format, quality, progress_hook)
+        
+        try:
+            # 创建下载器
+            with yt_dlp.YoutubeDL(options) as ydl:
+                # 获取视频信息
+                info = await loop.run_in_executor(
+                    None,
+                    lambda: ydl.extract_info(url, download=False)
+                )
+                
+                # 开始下载
+                await loop.run_in_executor(
+                    None,
+                    lambda: ydl.download([url])
+                )
+                
+                # 返回下载信息
+                return {
+                    "title": info["title"],
+                    "duration": info["duration"],
+                    "file_path": os.path.join(
+                        self.download_path,
+                        f"{info['title']}.{format.lower()}"
+                    ),
+                    "file_size": os.path.getsize(
+                        os.path.join(
+                            self.download_path,
+                            f"{info['title']}.{format.lower()}"
+                        )
+                    ),
+                    "thumbnail": info.get("thumbnail"),
+                    "description": info.get("description"),
+                    "upload_date": info.get("upload_date"),
+                    "uploader": info.get("uploader"),
+                    "view_count": info.get("view_count")
+                }
+                
+        except Exception as e:
+            raise Exception(f"下载失败: {str(e)}")
+    
+    def get_video_info(self, url: str) -> Dict[str, Any]:
+        """获取视频信息
         
         Args:
             url: 视频URL
             
         Returns:
-            str: 视频ID
+            Dict[str, Any]: 视频信息
         """
-        parsed = urlparse(url)
-        return parsed.path.split('/')[-1] or url 
+        options = {
+            "quiet": True,
+            "no_warnings": True
+        }
+        
+        if self.proxy:
+            options["proxy"] = self.proxy
+        
+        with yt_dlp.YoutubeDL(options) as ydl:
+            try:
+                return ydl.extract_info(url, download=False)
+            except Exception as e:
+                raise Exception(f"获取视频信息失败: {str(e)}")
+    
+    def cancel_download(self) -> None:
+        """取消下载"""
+        # TODO: 实现下载取消功能
+        pass 

@@ -1,4 +1,4 @@
-"""模型模块"""
+"""模型包"""
 
 from .base import Base
 from .history import DownloadHistory
