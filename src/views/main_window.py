@@ -1,343 +1,202 @@
 """主窗口模块"""
 
+import sys
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QFrame, QStackedWidget,
     QListWidget, QListWidgetItem, QCheckBox, QComboBox, QSpinBox,
     QDialog, QScrollArea, QTabWidget, QProgressBar, QSplitter,
     QTreeWidget, QTreeWidgetItem, QMenuBar, QMenu,
     QStatusBar, QStyle, QDockWidget, QFormLayout, QFileDialog,
-    QMessageBox
+    QMessageBox, QGridLayout, QToolButton, QGroupBox, QGraphicsDropShadowEffect
 )
-from PySide6.QtCore import Qt, QSize, Signal, Slot, QThread, QModelIndex
-from PySide6.QtGui import QIcon, QFont, QColor, QPalette, QBrush, QPixmap, QImage, QAction
+from PySide6.QtCore import Qt, QSize, Signal, Slot, QThread, QModelIndex, QPoint, QRect, QPropertyAnimation, QEasingCurve
+from PySide6.QtGui import (
+    QIcon, QFont, QColor, QPalette, QBrush, QPixmap, QImage, QPainter,
+    QPen, QPainterPath, QWindow, QAction
+)
 
+from .mac_window import MacWindow
 
-class DownloadTask:
-    """下载任务类，用于存储和管理下载任务"""
-    def __init__(self, url, title, quality="1080p", status="等待下载", progress=0):
-        self.url = url
-        self.title = title
-        self.quality = quality
-        self.status = status
-        self.progress = progress
-    
-    def update_progress(self, progress):
-        self.progress = progress
-    
-    def update_status(self, status):
-        self.status = status
-
-class DownloadTaskWidget(QWidget):
-    """下载任务项组件"""
-    remove_task = Signal(str)
-    
-    def __init__(self, task, parent=None):
+class MacStyleTitleBar(QWidget):
+    """Mac风格的标题栏，包含窗口控制按钮"""
+    def __init__(self, title="", parent=None):
         super().__init__(parent)
-        self.task = task
-        self.init_ui()
+        self.setFixedHeight(30)
+        self.init_ui(title)
     
-    def init_ui(self):
+    def init_ui(self, title):
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(10)
+        layout.setContentsMargins(10, 0, 10, 0)
+        layout.setSpacing(5)
         
-        # 标题标签
-        title_label = QLabel(self.task.title)
-        title_label.setMaximumWidth(300)
-        title_label.setWordWrap(True)
+        # 窗口控制按钮
+        self.close_btn = QPushButton()
+        self.minimize_btn = QPushButton()
+        self.maximize_btn = QPushButton()
         
-        # 质量标签
-        quality_label = QLabel(f"质量: {self.task.quality}")
-        quality_label.setStyleSheet("color: #666; font-size: 12px;")
+        # 设置按钮样式
+        for btn in [self.close_btn, self.minimize_btn, self.maximize_btn]:
+            btn.setFixedSize(12, 12)
+            btn.setStyleSheet("border-radius: 6px;")
         
-        # 状态标签
-        status_label = QLabel(f"状态: {self.task.status}")
-        status_label.setStyleSheet("color: #007AFF; font-size: 12px;")
-        
-        # 进度条
-        progress_bar = QProgressBar()
-        progress_bar.setRange(0, 100)
-        progress_bar.setValue(self.task.progress)
-        progress_bar.setFixedWidth(200)
-        
-        # 移除按钮
-        remove_btn = QPushButton("移除")
-        remove_btn.setFixedWidth(60)
-        remove_btn.clicked.connect(lambda: self.remove_task.emit(self.task.url))
-        
-        # 添加到布局
-        layout.addWidget(title_label)
-        layout.addWidget(quality_label)
-        layout.addWidget(status_label)
-        layout.addWidget(progress_bar)
-        layout.addWidget(remove_btn)
-        
-        self.setLayout(layout)
-    
-    def update_task(self, task):
-        self.task = task
-        for i in range(self.layout().count()):
-            widget = self.layout().itemAt(i).widget()
-            if isinstance(widget, QLabel):
-                if "质量" in widget.text():
-                    widget.setText(f"质量: {task.quality}")
-                elif "状态" in widget.text():
-                    widget.setText(f"状态: {task.status}")
-                elif widget.text() == self.task.title:
-                    widget.setText(task.title)
-            elif isinstance(widget, QProgressBar):
-                widget.setValue(task.progress)
-
-class MainWindow(QMainWindow):
-    """主窗口类"""
-    
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("4K Video Downloader Plus")
-        self.setMinimumSize(1000, 700)
-        self.setup_ui()
-        self.apply_styles()
-    
-    def setup_ui(self):
-        """设置UI"""
-        # 设置中心部件
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        
-        # 主布局
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-        
-        # 创建选项卡部件
-        self.tab_widget = QTabWidget()
-        self.tab_widget.setDocumentMode(True)
-        self.tab_widget.setTabPosition(QTabWidget.North)
-        
-        # 添加各个功能页面
-        self.download_manager = DownloadManager()
-        self.history_manager = HistoryManager()
-        self.creator_monitor = CreatorMonitor()
-        self.settings_panel = SettingsPanel()
-        
-        self.tab_widget.addTab(self.download_manager, "下载")
-        self.tab_widget.addTab(self.history_manager, "历史记录")
-        self.tab_widget.addTab(self.creator_monitor, "创作者")
-        self.tab_widget.addTab(self.settings_panel, "设置")
-        
-        # 添加到主布局
-        main_layout.addWidget(self.tab_widget)
-        
-        # 设置状态栏
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("就绪")
-        
-        # 连接信号
-        self.download_manager.add_task.connect(self.on_add_task)
-    
-    def apply_styles(self):
-        """应用样式"""
-        self.setStyleSheet("""
-            QMainWindow {
-                background: #F8F8F8;
-                font-family: -apple-system, BlinkMacSystemFont;
-            }
-            QTabWidget::pane {
-                border: none;
-                background: white;
-            }
-            QTabWidget::tab-bar {
-                alignment: left;
-            }
-            QTabBar::tab {
-                background: #F8F8F8;
-                color: #666;
-                min-width: 100px;
-                padding: 8px 16px;
-                border: none;
-                border-bottom: 2px solid transparent;
-            }
-            QTabBar::tab:selected {
-                color: #007AFF;
-                border-bottom: 2px solid #007AFF;
-            }
-            QTabBar::tab:hover {
-                color: #0066CC;
-            }
-            QStatusBar {
-                background: #F8F8F8;
-                color: #666;
-            }
-            QLineEdit {
-                padding: 8px 12px;
-                border: 1px solid #CCC;
-                border-radius: 4px;
-                background: white;
-            }
-            QLineEdit:focus {
-                border-color: #007AFF;
-            }
+        # 关闭按钮
+        self.close_btn.setStyleSheet("""
             QPushButton {
-                background: #007AFF;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 8px 16px;
-                min-width: 80px;
+                background-color: #FF5F56;
+                border-radius: 6px;
             }
             QPushButton:hover {
-                background: #0066CC;
+                background-color: #E04E45;
             }
-            QPushButton:pressed {
-                background: #0055AA;
+        """)
+        
+        # 最小化按钮
+        self.minimize_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FFBD2E;
+                border-radius: 6px;
             }
-            QComboBox {
-                padding: 8px 12px;
-                border: 1px solid #CCC;
-                border-radius: 4px;
+            QPushButton:hover {
+                background-color: #E0A528;
+            }
+        """)
+        
+        # 最大化按钮
+        self.maximize_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #27C93F;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                background-color: #22B037;
+            }
+        """)
+        
+        # 添加到布局
+        layout.addWidget(self.close_btn)
+        layout.addWidget(self.minimize_btn)
+        layout.addWidget(self.maximize_btn)
+        layout.addStretch()
+        
+        # 添加标题
+        title_label = QLabel(title)
+        title_label.setStyleSheet("color: #333; font-size: 13px;")
+        layout.addWidget(title_label, alignment=Qt.AlignCenter)
+        layout.addStretch()
+        
+        self.setLayout(layout)
+
+class MacDialogTitleBar(QWidget):
+    """Mac风格对话框标题栏"""
+    def __init__(self, title="", parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(32)
+        self.setObjectName("DialogTitleBar")
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 0, 12, 0)
+        
+        # 关闭按钮
+        self.close_btn = QPushButton()
+        self.close_btn.setObjectName("DialogCloseBtn")
+        self.close_btn.setFixedSize(12, 12)
+        
+        # 标题
+        title_label = QLabel(title)
+        title_label.setAlignment(Qt.AlignCenter)
+        
+        layout.addWidget(self.close_btn)
+        layout.addStretch()
+        layout.addWidget(title_label)
+        layout.addStretch()
+
+class MacDialog(QDialog):
+    """Mac风格对话框基类"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setup_ui()
+        self.apply_style()
+        
+        # 窗口拖动相关
+        self.drag_pos = None
+    
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # 内容区域
+        self.content = QWidget()
+        self.content.setObjectName("DialogContent")
+        self.content_layout = QVBoxLayout(self.content)
+        self.content_layout.setContentsMargins(20, 20, 20, 20)
+        
+        layout.addWidget(self.content)
+    
+    def apply_style(self):
+        self.setStyleSheet("""
+            #DialogContent {
                 background: white;
+                border-radius: 10px;
+                border: 1px solid #E1E1E1;
             }
-            QComboBox:hover {
-                border-color: #999;
+            #DialogTitleBar {
+                background: #E8E8E8;
+                border-top-left-radius: 10px;
+                border-top-right-radius: 10px;
+                border-bottom: 1px solid #D1D1D1;
             }
-            QComboBox:focus {
-                border-color: #007AFF;
+            #DialogCloseBtn {
+                background: #FF5F57;
+                border: none;
+                border-radius: 6px;
+            }
+            #DialogCloseBtn:hover {
+                background: #FF4D4F;
             }
         """)
     
-    @Slot(str, str, str)
-    def on_add_task(self, url: str, title: str, quality: str):
-        """添加下载任务的槽函数"""
-        self.status_bar.showMessage(f"开始下载: {title}")
-        # 这里应该实现实际的下载逻辑
-
-class DownloadManager(QWidget):
-    """下载管理主界面"""
-    add_task = Signal(str, str, str)
+    def set_title(self, title):
+        """设置对话框标题并添加标题栏"""
+        self.setWindowTitle(title)
+        title_bar = MacDialogTitleBar(title, self)
+        title_bar.close_btn.clicked.connect(self.close)
+        self.content_layout.insertWidget(0, title_bar)
     
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and event.y() < 32:
+            self.drag_pos = event.globalPosition().toPoint()
+    
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.LeftButton and self.drag_pos is not None:
+            self.move(self.pos() + event.globalPosition().toPoint() - self.drag_pos)
+            self.drag_pos = event.globalPosition().toPoint()
+    
+    def mouseReleaseEvent(self, event):
+        self.drag_pos = None
+
+class CreatorMonitorDialog(MacDialog):
+    """创作者监控对话框"""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.tasks = []
-        self.init_ui()
+        self.setMinimumSize(800, 500)
+        self.set_title("创作者监控")
+        self.setup_creator_ui()
     
-    def init_ui(self):
-        # 主布局
-        main_layout = QVBoxLayout(self)
-        
-        # 顶部输入区域
-        input_layout = QHBoxLayout()
-        input_layout.setSpacing(10)
-        
-        # URL输入框
-        url_label = QLabel("视频URL:")
-        self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("粘贴视频URL...")
-        self.url_input.setMinimumWidth(400)
-        
-        # 质量选择
-        quality_label = QLabel("质量:")
-        self.quality_combo = QComboBox()
-        self.quality_combo.addItems(["1080p", "720p", "480p", "360p", "音频"])
-        
-        # 下载按钮
-        download_btn = QPushButton("开始下载")
-        download_btn.clicked.connect(self.start_download)
-        
-        # 添加到输入布局
-        input_layout.addWidget(url_label)
-        input_layout.addWidget(self.url_input)
-        input_layout.addWidget(quality_label)
-        input_layout.addWidget(self.quality_combo)
-        input_layout.addWidget(download_btn)
-        
-        # 任务列表区域
-        tasks_label = QLabel("下载任务")
-        tasks_label.setStyleSheet("font-weight: bold; font-size: 14px; margin-top: 10px;")
-        
-        self.tasks_layout = QVBoxLayout()
-        self.tasks_layout.setSpacing(5)
-        
-        # 滚动区域
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        
-        self.tasks_container = QWidget()
-        self.tasks_container.setLayout(self.tasks_layout)
-        scroll_area.setWidget(self.tasks_container)
-        
-        # 添加到主布局
-        main_layout.addLayout(input_layout)
-        main_layout.addWidget(tasks_label)
-        main_layout.addWidget(scroll_area)
-        main_layout.addStretch()
-    
-    def start_download(self):
-        url = self.url_input.text().strip()
-        if not url:
-            QMessageBox.warning(self, "警告", "请输入视频URL")
-            return
-        
-        quality = self.quality_combo.currentText()
-        # 这里应该调用解析URL的函数获取视频标题
-        title = "示例视频标题"  # 实际应用中应从URL解析
-        
-        self.add_task.emit(url, title, quality)
-        self.url_input.clear()
-
-class HistoryManager(QWidget):
-    """历史记录管理界面"""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.init_ui()
-    
-    def init_ui(self):
-        layout = QVBoxLayout(self)
-        
-        # 标题
-        title_label = QLabel("下载历史记录")
-        title_label.setStyleSheet("font-weight: bold; font-size: 14px; margin: 10px 0;")
-        
-        # 历史记录列表
-        self.history_list = QListWidget()
-        
-        # 清空历史按钮
-        clear_btn = QPushButton("清空历史记录")
-        clear_btn.clicked.connect(self.clear_history)
-        
-        # 添加到布局
-        layout.addWidget(title_label)
-        layout.addWidget(self.history_list)
-        layout.addWidget(clear_btn)
-    
-    def clear_history(self):
-        reply = QMessageBox.question(self, "确认", "确定要清空所有历史记录吗？", 
-                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if reply == QMessageBox.Yes:
-            self.history_list.clear()
-
-class CreatorMonitor(QWidget):
-    """创作者监控界面"""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.init_ui()
-    
-    def init_ui(self):
-        layout = QVBoxLayout(self)
-        
+    def setup_creator_ui(self):
         # 顶部控制区域
         control_layout = QHBoxLayout()
         
-        # 添加创作者按钮
         add_btn = QPushButton("添加创作者")
-        add_btn.clicked.connect(self.add_creator_dialog)
+        add_btn.setObjectName("PrimaryBtn")
+        add_btn.clicked.connect(self.add_creator)
         
-        # 刷新按钮
         refresh_btn = QPushButton("刷新")
+        refresh_btn.setObjectName("SecondaryBtn")
         
-        # 添加到控制布局
         control_layout.addWidget(add_btn)
         control_layout.addWidget(refresh_btn)
         control_layout.addStretch()
@@ -345,59 +204,264 @@ class CreatorMonitor(QWidget):
         # 创作者列表
         self.creator_tree = QTreeWidget()
         self.creator_tree.setHeaderLabels(["创作者", "平台", "最新视频", "更新时间"])
+        self.creator_tree.setObjectName("CreatorTree")
         
-        # 添加到布局
-        layout.addLayout(control_layout)
-        layout.addWidget(self.creator_tree)
+        self.content_layout.addLayout(control_layout)
+        self.content_layout.addWidget(self.creator_tree)
     
-    def add_creator_dialog(self):
+    def add_creator(self):
+        """添加创作者"""
         QMessageBox.information(self, "提示", "添加创作者功能将在后续版本中实现")
 
-class SettingsPanel(QWidget):
-    """设置面板"""
+class HistoryDialog(MacDialog):
+    """历史记录对话框"""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.init_ui()
+        self.setMinimumSize(800, 500)
+        self.set_title("历史记录")
+        self.setup_history_ui()
     
-    def init_ui(self):
-        layout = QVBoxLayout(self)
+    def setup_history_ui(self):
+        self.history_list = QListWidget()
+        self.history_list.setObjectName("HistoryList")
         
-        # 设置表单
-        form_layout = QFormLayout()
+        clear_btn = QPushButton("清空历史记录")
+        clear_btn.setObjectName("SecondaryBtn")
+        clear_btn.clicked.connect(self.clear_history)
         
-        # 下载目录
+        self.content_layout.addWidget(self.history_list)
+        self.content_layout.addWidget(clear_btn, alignment=Qt.AlignRight)
+    
+    def clear_history(self):
+        """清空历史记录"""
+        reply = QMessageBox.question(
+            self, "确认", "确定要清空所有历史记录吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            self.history_list.clear()
+
+class PreferencesDialog(MacDialog):
+    """首选项对话框"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(800, 500)
+        self.set_title("首选项")
+        self.setup_preferences_ui()
+    
+    def setup_preferences_ui(self):
+        tabs = QTabWidget()
+        tabs.setObjectName("PrefTabs")
+        
+        # 常规设置
+        general_tab = QWidget()
+        general_layout = QVBoxLayout(general_tab)
+        
+        # 播放列表选项
+        playlist_group = QFrame()
+        playlist_group.setObjectName("PrefGroup")
+        playlist_layout = QVBoxLayout(playlist_group)
+        
+        playlist_title = QLabel("播放列表选项")
+        playlist_title.setObjectName("GroupTitle")
+        
+        options = [
+            "为播放列表和频道创建子目录",
+            "在文件名中添加序号",
+            "跳过重复视频（实验）",
+            "生成.m3u播放列表文件"
+        ]
+        
+        playlist_layout.addWidget(playlist_title)
+        for text in options:
+            cb = QCheckBox(text)
+            cb.setObjectName("PrefCheckbox")
+            playlist_layout.addWidget(cb)
+        
+        # 媒体处理选项
+        media_group = QFrame()
+        media_group.setObjectName("PrefGroup")
+        media_layout = QVBoxLayout(media_group)
+        
+        media_title = QLabel("媒体处理")
+        media_title.setObjectName("GroupTitle")
+        
+        media_options = [
+            "嵌入字幕到视频",
+            "自动添加标签信息",
+            "导入到媒体库"
+        ]
+        
+        media_layout.addWidget(media_title)
+        for text in media_options:
+            cb = QCheckBox(text)
+            cb.setObjectName("PrefCheckbox")
+            media_layout.addWidget(cb)
+        
+        general_layout.addWidget(playlist_group)
+        general_layout.addWidget(media_group)
+        general_layout.addStretch()
+        
+        # 连接设置
+        connection_tab = QWidget()
+        connection_layout = QVBoxLayout(connection_tab)
+        
+        # 下载目录设置
+        dir_group = QFrame()
+        dir_group.setObjectName("PrefGroup")
+        dir_layout = QFormLayout(dir_group)
+        
         self.download_dir_input = QLineEdit()
         self.download_dir_input.setText("./downloads")
         self.download_dir_input.setReadOnly(True)
         
-        dir_layout = QHBoxLayout()
-        dir_layout.addWidget(self.download_dir_input)
-        
         change_dir_btn = QPushButton("更改")
+        change_dir_btn.setObjectName("SecondaryBtn")
         change_dir_btn.clicked.connect(self.change_download_dir)
-        dir_layout.addWidget(change_dir_btn)
         
-        form_layout.addRow("下载目录:", dir_layout)
+        dir_btn_layout = QHBoxLayout()
+        dir_btn_layout.addWidget(self.download_dir_input)
+        dir_btn_layout.addWidget(change_dir_btn)
+        
+        dir_layout.addRow("下载目录:", dir_btn_layout)
         
         # 代理设置
+        proxy_group = QFrame()
+        proxy_group.setObjectName("PrefGroup")
+        proxy_layout = QFormLayout(proxy_group)
+        
         self.proxy_check = QCheckBox("使用代理")
         self.proxy_input = QLineEdit()
         self.proxy_input.setText("127.0.0.1:7890")
         self.proxy_input.setEnabled(False)
+        
         self.proxy_check.toggled.connect(self.proxy_input.setEnabled)
         
-        form_layout.addRow("代理设置:", self.proxy_check)
-        form_layout.addRow("", self.proxy_input)
+        proxy_layout.addRow("代理设置:", self.proxy_check)
+        proxy_layout.addRow("", self.proxy_input)
         
-        # 添加到主布局
-        layout.addLayout(form_layout)
-        layout.addStretch()
+        # 下载设置
+        thread_layout = QHBoxLayout()
+        thread_layout.addWidget(QLabel("下载强度:"))
+        self.thread_spin = QSpinBox()
+        self.thread_spin.setRange(1, 8)
+        self.thread_spin.setValue(3)
+        thread_layout.addStretch()
+        
+        warning = QLabel("高强度可能导致临时IP封禁")
+        warning.setObjectName("WarningLabel")
+        
+        connection_layout.addWidget(dir_group)
+        connection_layout.addWidget(proxy_group)
+        connection_layout.addLayout(thread_layout)
+        connection_layout.addWidget(warning)
+        connection_layout.addStretch()
+        
+        tabs.addTab(general_tab, "常规")
+        tabs.addTab(connection_tab, "连接")
+        
+        self.content_layout.addWidget(tabs)
     
     def change_download_dir(self):
-        dir_path = QFileDialog.getExistingDirectory(
-            self, "选择下载目录", 
+        """更改下载目录"""
+        directory = QFileDialog.getExistingDirectory(
+            self, "选择下载目录",
             self.download_dir_input.text(),
             QFileDialog.ShowDirsOnly
         )
-        if dir_path:
-            self.download_dir_input.setText(dir_path) 
+        if directory:
+            self.download_dir_input.setText(directory)
+
+class MainWindow(MacWindow):
+    """视频下载器主窗口"""
+    def __init__(self):
+        super().__init__("Universal Video Downloader")
+        self.setup_toolbar()
+        self.setup_main_ui()
+        self.setup_dialogs()
+    
+    def setup_toolbar(self):
+        """设置工具栏"""
+        # 创作者监控
+        creator_btn = QToolButton()
+        creator_btn.setText("创作者监控")
+        creator_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        creator_btn.clicked.connect(self.show_creator_monitor)
+        self.toolbar.addWidget(creator_btn)
+        
+        # 历史记录
+        history_btn = QToolButton()
+        history_btn.setText("历史记录")
+        history_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        history_btn.clicked.connect(self.show_history)
+        self.toolbar.addWidget(history_btn)
+        
+        # 首选项
+        pref_btn = QToolButton()
+        pref_btn.setText("首选项")
+        pref_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        pref_btn.clicked.connect(self.show_preferences)
+        self.toolbar.addWidget(pref_btn)
+    
+    def setup_main_ui(self):
+        """设置主界面"""
+        # URL输入框
+        input_frame = QFrame()
+        input_frame.setObjectName("InputFrame")
+        input_layout = QHBoxLayout(input_frame)
+        
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText("粘贴视频链接")
+        self.url_input.setObjectName("UrlInput")
+        
+        download_btn = QPushButton("下载")
+        download_btn.setObjectName("DownloadBtn")
+        download_btn.clicked.connect(self.start_download)
+        
+        input_layout.addWidget(self.url_input)
+        input_layout.addWidget(download_btn)
+        
+        # 智能模式开关
+        smart_mode = QCheckBox("智能模式")
+        smart_mode.setObjectName("SmartMode")
+        smart_mode.setChecked(True)
+        
+        # 下载区域
+        drop_area = QLabel("拖放链接到此处开始下载")
+        drop_area.setObjectName("DropArea")
+        drop_area.setAlignment(Qt.AlignCenter)
+        drop_area.setMinimumHeight(300)
+        
+        # 添加到主布局
+        self.content_layout.addWidget(input_frame)
+        self.content_layout.addWidget(smart_mode)
+        self.content_layout.addWidget(drop_area)
+    
+    def setup_dialogs(self):
+        """创建对话框"""
+        self.creator_dialog = CreatorMonitorDialog(self)
+        self.history_dialog = HistoryDialog(self)
+        self.preferences_dialog = PreferencesDialog(self)
+    
+    def show_creator_monitor(self):
+        """显示创作者监控对话框"""
+        self.creator_dialog.show()
+    
+    def show_history(self):
+        """显示历史记录对话框"""
+        self.history_dialog.show()
+    
+    def show_preferences(self):
+        """显示首选项对话框"""
+        self.preferences_dialog.show()
+    
+    def start_download(self):
+        """开始下载"""
+        url = self.url_input.text().strip()
+        if not url:
+            QMessageBox.warning(self, "警告", "请输入视频URL")
+            return
+        
+        # TODO: 实现下载逻辑
+        self.url_input.clear() 
