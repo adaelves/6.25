@@ -1,7 +1,4 @@
-"""数据库模型包。
-
-包含各种数据库模型定义。
-"""
+"""模型模块"""
 
 from .base import Base
 from .history import DownloadHistory

@@ -1,0 +1,246 @@
+/* 主窗口 */
+QMainWindow {
+    background: #2D2D2D;
+    color: #FFFFFF;
+}
+
+/* 标签页 */
+QTabWidget::pane {
+    border: 1px solid #444;
+    border-radius: 5px;
+}
+
+QTabWidget::tab-bar {
+    alignment: left;
+}
+
+QTabBar::tab {
+    background: #333;
+    color: #fff;
+    padding: 8px 16px;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    margin-right: 2px;
+}
+
+QTabBar::tab:selected {
+    background: #4CAF50;
+}
+
+QTabBar::tab:hover {
+    background: #444;
+}
+
+/* 按钮 */
+QPushButton {
+    background: #4CAF50;
+    border-radius: 5px;
+    padding: 8px;
+    min-width: 80px;
+    color: white;
+    border: none;
+}
+
+QPushButton:hover {
+    background: #66BB6A;
+}
+
+QPushButton:pressed {
+    background: #388E3C;
+}
+
+QPushButton:disabled {
+    background: #666;
+    color: #999;
+}
+
+/* 输入框 */
+QLineEdit {
+    padding: 8px;
+    border: 1px solid #555;
+    border-radius: 3px;
+    background: #333;
+    color: white;
+}
+
+QLineEdit:focus {
+    border-color: #4CAF50;
+}
+
+/* 列表部件 */
+QListWidget {
+    background: #333;
+    border: 1px solid #444;
+    border-radius: 5px;
+    padding: 5px;
+}
+
+QListWidget::item {
+    color: white;
+    padding: 5px;
+    border-radius: 3px;
+}
+
+QListWidget::item:hover {
+    background: #444;
+}
+
+QListWidget::item:selected {
+    background: #4CAF50;
+}
+
+/* 标签 */
+QLabel {
+    color: white;
+}
+
+/* 复选框 */
+QCheckBox {
+    color: white;
+    spacing: 5px;
+}
+
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #555;
+    border-radius: 3px;
+    background: #333;
+}
+
+QCheckBox::indicator:checked {
+    background: #4CAF50;
+}
+
+/* 数字输入框 */
+QSpinBox {
+    padding: 5px;
+    border: 1px solid #555;
+    border-radius: 3px;
+    background: #333;
+    color: white;
+}
+
+QSpinBox::up-button, QSpinBox::down-button {
+    background: #444;
+    border: none;
+    border-radius: 2px;
+}
+
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+    background: #555;
+}
+
+/* 进度条 */
+QProgressBar {
+    border: 1px solid #555;
+    border-radius: 3px;
+    text-align: center;
+    height: 20px;
+    background: #333;
+    color: white;
+}
+
+QProgressBar::chunk {
+    background: #4CAF50;
+    border-radius: 2px;
+}
+
+/* 滚动条 */
+QScrollBar:vertical {
+    border: none;
+    background: #333;
+    width: 10px;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical {
+    background: #666;
+    min-height: 20px;
+    border-radius: 5px;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+}
+
+QScrollBar:horizontal {
+    border: none;
+    background: #333;
+    height: 10px;
+    margin: 0;
+}
+
+QScrollBar::handle:horizontal {
+    background: #666;
+    min-width: 20px;
+    border-radius: 5px;
+}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0;
+}
+
+/* 工具栏 */
+QToolBar {
+    spacing: 5px;
+    background: #333;
+    border: none;
+    padding: 5px;
+}
+
+QToolBar::separator {
+    width: 1px;
+    background: #555;
+    margin: 0 5px;
+}
+
+/* 菜单 */
+QMenu {
+    background: #333;
+    border: 1px solid #555;
+    border-radius: 3px;
+    padding: 5px;
+}
+
+QMenu::item {
+    color: white;
+    padding: 5px 20px;
+}
+
+QMenu::item:selected {
+    background: #4CAF50;
+}
+
+/* 下载任务卡片 */
+DownloadTaskWidget {
+    background: #333;
+    border-radius: 8px;
+    padding: 10px;
+    margin: 5px;
+}
+
+/* 系统托盘图标菜单 */
+QSystemTrayIcon {
+    background: #333;
+}
+
+/* 滚动区域 */
+QScrollArea {
+    border: none;
+    background: transparent;
+}
+
+/* 分割线 */
+QFrame[frameShape="4"] {
+    color: #555;
+}
+
+/* 提示框 */
+QToolTip {
+    background: #333;
+    color: white;
+    border: 1px solid #555;
+    border-radius: 3px;
+    padding: 5px;
+} 

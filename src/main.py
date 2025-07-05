@@ -5,71 +5,45 @@
 视频下载器主程序入口。
 """
 
-import os
 import sys
-import logging
-from pathlib import Path
+import asyncio
+import qasync
+from PySide6.QtGui import QIcon  # 先导入 QtGui
+from PySide6.QtCore import QTranslator, QLocale
+from PySide6.QtWidgets import QApplication, QMainWindow, QWidget
+from src.views.main_window import MainWindow
+from src.viewmodels.main_viewmodel import MainViewModel
 
-# 将项目根目录添加到Python路径
-ROOT_DIR = Path(__file__).parent.parent
-sys.path.insert(0, str(ROOT_DIR))
-
-from PySide6.QtWidgets import QApplication
-
-from src.gui.main_window import MainWindow
-from src.core.download_scheduler import DownloadScheduler
-from src.core.settings import Settings
-from src.core.cookie_manager import CookieManager
-
-def setup_logging():
-    """配置日志。"""
-    log_dir = ROOT_DIR / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler(
-                log_dir / "app.log",
-                encoding="utf-8"
-            )
-        ]
-    )
-
-def main():
-    """程序入口函数。"""
-    # 配置日志
-    setup_logging()
-    
-    # 创建应用程序
+async def main() -> None:
+    """应用程序主入口"""
+    # 创建应用程序实例
     app = QApplication(sys.argv)
     
-    # 初始化设置
-    settings = Settings()
+    # 设置国际化
+    translator = QTranslator()
+    if translator.load(QLocale(), "", "", "translations"):
+        app.installTranslator(translator)
     
-    # 初始化 Cookie 管理器
-    cookie_manager = CookieManager()
+    # 创建主窗口和视图模型
+    window = MainWindow()
+    viewmodel = MainViewModel()
     
-    # 初始化下载调度器
-    scheduler = DownloadScheduler(
-        max_concurrent=settings.get("download.max_concurrent", 3),
-        max_retries=settings.get("download.max_retries", 3),
-        default_timeout=settings.get("download.timeout", 30),
-        cache_dir=ROOT_DIR / "cache",
-        cookie_manager=cookie_manager
+    # 连接信号
+    window.download_requested.connect(viewmodel.start_download)
+    window.path_changed.connect(viewmodel.update_download_path)
+    viewmodel.download_progress.connect(
+        lambda vid, prog: window.add_download_task(vid)[0].setValue(prog)
     )
+    viewmodel.download_speed.connect(window.update_speed)
     
-    # 创建主窗口
-    window = MainWindow(
-        scheduler=scheduler,
-        settings=settings
-    )
+    # 显示主窗口
     window.show()
     
-    # 运行应用程序
-    sys.exit(app.exec())
+    # 运行事件循环
+    await qasync.QApplication.instance().exec()
 
 if __name__ == "__main__":
-    main() 
+    try:
+        asyncio.run(main())
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        sys.exit(0) 
