@@ -1,0 +1,263 @@
+/* 全局样式 */
+* {
+    font-family: "SF Pro Display", "San Francisco", "-apple-system",
+                 "Segoe UI", "Roboto", "Helvetica", "Arial", sans-serif;
+}
+
+/* 主窗口 */
+#MainWidget {
+    background: #F5F5F7;
+    border-radius: 10px;
+}
+
+/* 标题栏 */
+#TitleBar {
+    background: #E8E8E8;
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+    min-height: 28px;  /* macOS标准高度 */
+}
+
+#TitleLabel {
+    color: #1C1C1E;
+    font-size: 13px;
+    font-weight: 500;
+    margin: 0 8px;
+}
+
+/* 窗口控制按钮 */
+#CloseBtn, #MinimizeBtn, #ZoomBtn {
+    border: none;
+    border-radius: 7px;  /* 直径14px的一半 */
+    margin: 0;
+    padding: 0;
+}
+
+#CloseBtn:hover, #MinimizeBtn:hover, #ZoomBtn:hover {
+    transform: scale(1.1);
+}
+
+#CloseBtn:pressed, #MinimizeBtn:pressed, #ZoomBtn:pressed {
+    transform: scale(0.9);
+}
+
+/* 工具栏 */
+#MainToolBar {
+    background: #F5F5F7;
+    border: none;
+    spacing: 10px;
+    padding: 5px 10px;
+}
+
+#MainToolBar QToolButton {
+    background: transparent;
+    border: none;
+    color: #333333;
+    padding: 5px 10px;
+    border-radius: 4px;
+}
+
+#MainToolBar QToolButton:hover {
+    background: #E8E8E8;
+}
+
+/* 内容区域 */
+#ContentWidget {
+    background: #FFFFFF;
+    border-bottom-left-radius: 10px;
+    border-bottom-right-radius: 10px;
+}
+
+/* 输入框 */
+#MacLineEdit {
+    background-color: #FFFFFF;
+    border: 1px solid #D8D8D8;
+    border-radius: 8px;
+    padding: 8px;
+    font-size: 13px;
+    selection-background-color: #007AFF;
+}
+
+#MacLineEdit:focus {
+    border-color: #007AFF;
+}
+
+#MacLineEdit:hover {
+    border-color: #B8B8B8;
+}
+
+/* 按钮 */
+#MacButton {
+    background-color: #007AFF;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+#MacButton:hover {
+    opacity: 0.9;
+}
+
+#MacButton:pressed {
+    opacity: 0.8;
+}
+
+#MacButton:disabled {
+    background-color: #E5E5E5;
+    color: #A0A0A0;
+}
+
+/* 复选框 */
+#MacCheckBox {
+    color: #1C1C1E;
+    font-size: 13px;
+    spacing: 8px;
+}
+
+#MacCheckBox:disabled {
+    color: #A0A0A0;
+}
+
+/* 下拉菜单 */
+#MacComboBox {
+    border: 1px solid #D0D0D0;
+    border-radius: 6px;
+    padding-left: 8px;
+    padding-right: 24px;
+    background: white;
+    min-width: 120px;
+    min-height: 32px;
+}
+
+#MacComboBox:hover {
+    border-color: #B8B8B8;
+}
+
+#MacComboBox:focus {
+    border-color: #007AFF;
+}
+
+#MacComboBox::drop-down {
+    border: none;
+    width: 24px;
+}
+
+#MacComboBox QAbstractItemView {
+    border: 1px solid #D0D0D0;
+    border-radius: 6px;
+    background: white;
+    selection-background-color: #007AFF;
+    selection-color: white;
+}
+
+/* 滑块 */
+#MacSlider {
+    margin: 8px 0;
+}
+
+#MacSlider::groove:horizontal {
+    height: 4px;
+    background: #E5E5E5;
+    border-radius: 2px;
+}
+
+#MacSlider::handle:horizontal {
+    width: 16px;
+    height: 16px;
+    margin: -6px 0;
+    background: white;
+    border: 1px solid #D0D0D0;
+    border-radius: 8px;
+}
+
+#MacSlider::handle:horizontal:hover {
+    background: #F5F5F5;
+}
+
+/* 导航项 */
+#NavigationItem {
+    border-radius: 6px;
+    padding: 8px;
+}
+
+#NavigationItem:hover {
+    background: #F5F5F5;
+}
+
+#NavigationItem[selected="true"] {
+    background: #E8E8E8;
+}
+
+/* 拖放区域 */
+#DropArea {
+    border: 1px solid #D8D8D8;
+    border-radius: 8px;
+    background: white;
+    min-height: 100px;
+}
+
+#DropArea[dragActive="true"] {
+    border: 2px dashed #007AFF;
+    background: #F0F9FF;
+}
+
+/* 暗色主题 */
+.dark {
+    /* 背景色 */
+    #MainWidget {
+        background: #1E1E1E;
+    }
+    
+    #TitleBar {
+        background: #2C2C2E;
+    }
+    
+    #ContentWidget {
+        background: #2C2C2E;
+    }
+    
+    /* 文字颜色 */
+    #TitleLabel, #MacCheckBox {
+        color: #FFFFFF;
+    }
+    
+    /* 控件样式 */
+    #MacLineEdit, #MacComboBox {
+        background-color: #2C2C2E;
+        border-color: #3C3C3E;
+        color: #FFFFFF;
+    }
+    
+    #MacButton {
+        background-color: #0A84FF;
+    }
+    
+    #MacButton:disabled {
+        background-color: #3C3C3E;
+        color: rgba(255, 255, 255, 0.5);
+    }
+    
+    /* 滑块 */
+    #MacSlider::groove:horizontal {
+        background: #3C3C3E;
+    }
+    
+    #MacSlider::handle:horizontal {
+        background: #2C2C2E;
+        border-color: #3C3C3E;
+    }
+    
+    /* 拖放区域 */
+    #DropArea {
+        background: #2C2C2E;
+        border-color: #3C3C3E;
+    }
+    
+    #DropArea[dragActive="true"] {
+        border-color: #0A84FF;
+        background: #1C1C1E;
+    }
+} 

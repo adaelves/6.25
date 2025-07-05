@@ -1,0 +1,131 @@
+/* 亮色主题 */
+
+/* 主窗口 */
+#MainWindow {
+    background: #F5F5F7;
+}
+
+/* 标题栏 */
+#TitleBar {
+    background: #E8E8E8;
+}
+
+#TitleLabel {
+    color: #1C1C1E;
+}
+
+/* 侧边栏 */
+#SideBar {
+    background: #F5F5F7;
+    border-right: 1px solid #E5E5E5;
+}
+
+/* 导航项 */
+.NavItem {
+    color: #1C1C1E;
+    background: transparent;
+}
+
+.NavItem:hover {
+    background: #E8E8E8;
+}
+
+.NavItem[selected="true"] {
+    background: #E0E0E0;
+    color: #007AFF;
+}
+
+/* 内容区域 */
+#ContentArea {
+    background: #FFFFFF;
+}
+
+/* 按钮 */
+.PrimaryButton {
+    background: #007AFF;
+    color: #FFFFFF;
+}
+
+.PrimaryButton:hover {
+    background: #0069DB;
+}
+
+.PrimaryButton:pressed {
+    background: #0058B8;
+}
+
+.SecondaryButton {
+    background: #F5F5F7;
+    border: 1px solid #D1D1D6;
+    color: #1C1C1E;
+}
+
+.SecondaryButton:hover {
+    background: #E8E8E8;
+}
+
+.SecondaryButton:pressed {
+    background: #D1D1D6;
+}
+
+/* 输入框 */
+.TextField {
+    background: #FFFFFF;
+    border: 1px solid #D1D1D6;
+    color: #1C1C1E;
+}
+
+.TextField:focus {
+    border-color: #007AFF;
+}
+
+.TextField:hover {
+    border-color: #B8B8B8;
+}
+
+/* 进度条 */
+.ProgressBar {
+    background: #E5E5E5;
+}
+
+.ProgressBar::chunk {
+    background: #007AFF;
+}
+
+/* 列表视图 */
+.ListView {
+    background: #FFFFFF;
+}
+
+.ListItem {
+    background: #FFFFFF;
+    color: #1C1C1E;
+}
+
+.ListItem:hover {
+    background: #F5F5F7;
+}
+
+.ListItem:selected {
+    background: #E8E8E8;
+}
+
+/* 工具提示 */
+QToolTip {
+    background: #1C1C1E;
+    color: #FFFFFF;
+    border: none;
+}
+
+/* 滚动条 */
+QScrollBar {
+    background: #F5F5F7;
+}
+
+QScrollBar::handle {
+    background: #D1D1D6;
+}
+
+QScrollBar::handle:hover {
+    background: #B8B8B8;
+} 

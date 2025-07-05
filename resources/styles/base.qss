@@ -1,0 +1,145 @@
+/* 基础样式 */
+* {
+    font-family: "SF Pro Display", "San Francisco", "-apple-system",
+                 "Segoe UI", "Roboto", "Helvetica", "Arial", sans-serif;
+}
+
+/* 主窗口 */
+#MainWindow {
+    border-radius: 10px;
+}
+
+/* 标题栏 */
+#TitleBar {
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+    min-height: 28px;
+}
+
+/* 窗口控制按钮 */
+#CloseBtn, #MinimizeBtn, #ZoomBtn {
+    border: none;
+    border-radius: 7px;
+    margin: 0;
+    padding: 0;
+}
+
+#CloseBtn:hover, #MinimizeBtn:hover, #ZoomBtn:hover {
+    transform: scale(1.1);
+}
+
+#CloseBtn:pressed, #MinimizeBtn:pressed, #ZoomBtn:pressed {
+    transform: scale(0.9);
+}
+
+/* 侧边栏 */
+#SideBar {
+    min-width: 200px;
+    max-width: 200px;
+    padding: 10px;
+}
+
+/* 导航项 */
+.NavItem {
+    padding: 8px 12px;
+    border-radius: 6px;
+    margin-bottom: 4px;
+    font-size: 14px;
+}
+
+.NavItem[selected="true"] {
+    font-weight: 500;
+}
+
+/* 内容区域 */
+#ContentArea {
+    padding: 20px;
+}
+
+/* 按钮 */
+.PrimaryButton {
+    border: none;
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 500;
+    min-width: 80px;
+    min-height: 32px;
+}
+
+.SecondaryButton {
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-size: 13px;
+    min-width: 80px;
+    min-height: 32px;
+}
+
+/* 输入框 */
+.TextField {
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 13px;
+    min-height: 32px;
+}
+
+/* 进度条 */
+.ProgressBar {
+    border-radius: 4px;
+    min-height: 4px;
+    max-height: 4px;
+}
+
+/* 列表视图 */
+.ListView {
+    border: none;
+    border-radius: 8px;
+}
+
+.ListItem {
+    border-radius: 6px;
+    padding: 8px;
+    margin: 2px 4px;
+}
+
+/* 工具提示 */
+QToolTip {
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
+/* 滚动条 */
+QScrollBar:vertical {
+    width: 8px;
+    border-radius: 4px;
+}
+
+QScrollBar:horizontal {
+    height: 8px;
+    border-radius: 4px;
+}
+
+QScrollBar::handle {
+    border-radius: 4px;
+}
+
+/* 高DPI支持 */
+@media (device-pixel-ratio: 2) {
+    * {
+        font-size: 13px;
+    }
+    
+    .NavItem {
+        font-size: 15px;
+    }
+    
+    .PrimaryButton, .SecondaryButton {
+        font-size: 14px;
+    }
+}
+
+/* 无障碍支持 */
+*[accessibleName] {
+    font-size: 14px;
+} 
